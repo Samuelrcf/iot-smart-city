@@ -1,113 +1,136 @@
 package server;
 
 import java.io.BufferedReader;
+import java.io.IOException;
 import java.io.InputStreamReader;
+import java.io.OutputStream;
 import java.io.PrintWriter;
+import java.net.InetSocketAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 
+import com.sun.net.httpserver.HttpExchange;
+import com.sun.net.httpserver.HttpServer;
+
 public class LocationService {
 
-	private static final int LOCATION_PORT = 9000;
-	public static final int AUTH_PORT = 8080;
+	// ----------------------------
+	// CONFIGURAÇÕES
+	// ----------------------------
+	private static final int SOCKET_PORT = 9000;
+	private static final int HTTP_PORT = SOCKET_PORT + 1;
+
 	public static final String LOCATION_ADDRESS = "127.0.0.1";
+	public static final String DATACENTER_HTTP = "http://127.0.0.1:7000";
 
-	// Método que inicia o Servidor de Localização
+	// ----------------------------
+	// INICIALIZAÇÃO
+	// ----------------------------
 	public void start() {
-		System.out.printf("🗺️ LocationService iniciado na porta %d...%n", LOCATION_PORT);
+		System.out.println("🗺️ LocationService iniciado");
 
-		try (ServerSocket serverSocket = new ServerSocket(LOCATION_PORT)) {
+		startSocketServerAsync();
+		startHttpServerAsync();
+	}
+
+	private void startSocketServerAsync() {
+		new Thread(() -> {
+			System.out.println("📡 Iniciando SocketListener na porta " + SOCKET_PORT);
+			startSocketServer();
+		}).start();
+	}
+
+	private void startHttpServerAsync() {
+		new Thread(() -> {
+			System.out.println("🌐 Iniciando HttpListener na porta " + HTTP_PORT);
+			startHttpServer();
+		}).start();
+	}
+
+	// ----------------------------
+	// SERVIDOR SOCKET (IoT)
+	// ----------------------------
+	private void startSocketServer() {
+		try (ServerSocket serverSocket = new ServerSocket(SOCKET_PORT)) {
+			System.out.println("📡 Aguardando dispositivos (SOCKET)...");
+
 			while (true) {
-				Socket clientSocket = serverSocket.accept();
-				new Thread(() -> handleDeviceConnection(clientSocket)).start();
+				Socket client = serverSocket.accept();
+				new Thread(() -> handleDevice(client)).start();
 			}
+
 		} catch (Exception e) {
-			System.err.println("❌ LocationService parou inesperadamente: " + e.getMessage());
+			logError("Erro no SocketServer", e);
 		}
 	}
 
-	private void handleDeviceConnection(Socket socket) {
+	private void handleDevice(Socket socket) {
 		try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-				PrintWriter out = new PrintWriter(socket.getOutputStream(), true);) {
-			System.out.println("\n📡 LocationService: Novo dispositivo conectado para descoberta.");
+				PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
 
-			// 1. REDIRECIONAMENTO PARA AUTENTICAÇÃO
-			String authAddress = EdgeService.BORDER_ADDRESS + ":" + AUTH_PORT;
-			out.println("AUTH_REDIRECT:" + authAddress);
-			System.out.println("🗺️ LocationService: Redirecionado para Autenticação em " + authAddress);
+			System.out.println("\n📡 Novo dispositivo conectado.");
 
-			// O LocationService encerra sua parte aqui, o Dispositivo se conecta ao
-			// servidor de AUTENTICAÇÃO
+			String authURL = EdgeService.BORDER_ADDRESS + ":" + EdgeService.AUTH_PORT;
+
+			out.println("AUTH_REDIRECT:" + authURL);
+
+			System.out.println("➡ Dispositivo redirecionado ao Edge: " + authURL);
 
 		} catch (Exception e) {
-			System.err.println("❌ Erro no LocationService: " + e.getMessage());
+			logError("Erro ao tratar dispositivo", e);
 		}
 	}
 
-	// --- MÉTODOS DE AUTENTICAÇÃO SIMULADOS (No LocationService, ele apenas
-	// gerencia o fluxo) ---
-	// Em um cenário real, Autenticação seria um Serviço separado. Aqui,
-	// simplificamos a lógica de autenticação
-	// no SecurityUtils e o servidor LocationService apenas gerencia o fluxo de
-	// portas.
+	// ----------------------------
+	// SERVIDOR HTTP (Clientes)
+	// ----------------------------
+	private void startHttpServer() {
+		try {
+			HttpServer http = HttpServer.create(new InetSocketAddress(HTTP_PORT), 0);
 
-	// Este método simula o Servidor de Autenticação (pode ser iniciado como um
-	// processo separado se necessário)
-	public void startAuthServer() {
-		System.out.printf("🔑 AuthService iniciado na porta %d...%n", AUTH_PORT);
-		try (ServerSocket authSocket = new ServerSocket(AUTH_PORT)) {
-			while (true) {
-				Socket deviceSocket = authSocket.accept();
-				new Thread(() -> handleAuthRequest(deviceSocket)).start();
-			}
-		} catch (Exception e) {
-			System.err.println("❌ AuthService parou inesperadamente: " + e.getMessage());
+			http.createContext("/client", this::handleClientRequest);
+			http.setExecutor(null);
+			http.start();
+
+			System.out.println("🌐 HTTP pronto para clientes na porta " + HTTP_PORT);
+
+		} catch (IOException e) {
+			logError("Erro no HttpServer", e);
 		}
 	}
 
-	private void handleAuthRequest(Socket socket) {
-		try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-				PrintWriter out = new PrintWriter(socket.getOutputStream(), true);) {
-			// Espera pelas credenciais (simuladas)
-			String credentialsLine = in.readLine();
-			if (credentialsLine == null || !credentialsLine.startsWith("CRED:")) {
-				out.println("AUTH_FAIL: Invalid request format.");
-				return;
-			}
-
-			String[] parts = credentialsLine.substring(5).split(":");
-			if (parts.length != 2) {
-				out.println("AUTH_FAIL: Malformed credentials.");
-				return;
-			}
-
-			String deviceId = parts[0];
-			String password = parts[1];
-
-			if (EdgeService.authenticateDevice(deviceId, password)) {
-				// Autenticado com sucesso, redireciona para a Borda
-				String edgeAddress = EdgeService.BORDER_ADDRESS + ":" + EdgeService.EDGE_PORT;
-				out.println("AUTH_SUCCESS:" + edgeAddress);
-				System.out.println("🔑 AuthService: Dispositivo " + deviceId
-						+ " autenticado e redirecionado para a Borda em " + edgeAddress);
-			} else {
-				out.println("AUTH_FAIL: Invalid credentials.");
-				System.out.println("🔑 AuthService: Falha de autenticação para " + deviceId);
-			}
-
-		} catch (Exception e) {
-			System.err.println("❌ Erro no AuthService: " + e.getMessage());
+	private void handleClientRequest(HttpExchange exchange) throws IOException {
+		if (!exchange.getRequestMethod().equalsIgnoreCase("GET")) {
+			exchange.sendResponseHeaders(405, -1);
+			return;
 		}
+
+		System.out.println("🌐 Cliente conectado ao Localizador via HTTP.");
+
+		String redirectMsg = "HTTP_REDIRECT:" + DATACENTER_HTTP;
+		byte[] response = redirectMsg.getBytes();
+
+		exchange.sendResponseHeaders(200, response.length);
+
+		try (OutputStream os = exchange.getResponseBody()) {
+			os.write(response);
+		}
+
+		System.out.println("➡ Cliente redirecionado para DataCenter: " + DATACENTER_HTTP);
 	}
 
+	// ----------------------------
+	// LOG DE ERROS
+	// ----------------------------
+	private void logError(String msg, Exception e) {
+		System.err.println("❌ " + msg + ": " + e.getMessage());
+	}
+
+	// ----------------------------
+	// MAIN
+	// ----------------------------
 	public static void main(String[] args) {
-		System.out.println("--- 🚀 INICIANDO PROCESSO DE LOCALIZAÇÃO E AUTENTICAÇÃO ---");
-		LocationService service = new LocationService();
-
-		// Iniciamos os servidores de Location (porta 9000) e Auth (porta 8080)
-		// em threads, mas dentro deste único processo Java.
-		new Thread(() -> service.start(), "Location-Server").start();
-		new Thread(() -> service.startAuthServer(), "Auth-Server").start();
+		System.out.println("--- 🚀 INICIANDO PROCESSO DE LOCALIZAÇÃO ---");
+		new LocationService().start();
 	}
-
 }

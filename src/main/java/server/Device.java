@@ -7,7 +7,10 @@ import java.net.DatagramPacket;
 import java.net.DatagramSocket;
 import java.net.InetAddress;
 import java.net.Socket;
+import java.security.KeyFactory;
+import java.security.NoSuchAlgorithmException;
 import java.security.PublicKey;
+import java.security.spec.X509EncodedKeySpec;
 import java.time.LocalDateTime;
 import java.util.Base64;
 import java.util.LinkedHashMap;
@@ -17,75 +20,75 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
+import javax.crypto.Cipher;
+import javax.crypto.KeyGenerator;
 import javax.crypto.SecretKey;
-// Removida importação do Gson
-
-import security.SecurityUtils;
 
 public class Device {
 
+	/*
+	 * ============================================================= 1. ATRIBUTOS
+	 * =============================================================
+	 */
 	private final String deviceId;
 	private final String password;
 	private final Random random = new Random();
-	private static long dataIdCounter = 1; // Contador sequencial para o ID dos dados
+	private static long dataIdCounter = 1; // Sequencial para cada dado gerado
 
+	/*
+	 * ============================================================= 2. CONSTRUTOR
+	 * =============================================================
+	 */
 	public Device(String deviceId, String password) {
 		this.deviceId = deviceId;
 		this.password = password;
 	}
 
-	// --- MÉTODO DE Geração de Dados Aleatórios (Mantido) ---
-	private ClimateData generateRandomClimateData() {
-		// Faixas de dados baseadas no seu plano original
-		double co2 = 350 + (600 - 350) * random.nextDouble(); // 350 - 600 ppm
-		double co = 0 + (50 - 0) * random.nextDouble(); // 0 - 50 ppm
-		double no2 = 0 + (150 - 0) * random.nextDouble(); // 0 - 150 µg/m³
-		double so2 = 0 + (50 - 0) * random.nextDouble(); // 0 - 50 µg/m³
-		double pm25 = 0 + (200 - 0) * random.nextDouble(); // 0 - 200 µg/m³
-		double pm10 = 0 + (200 - 0) * random.nextDouble(); // 0 - 200 µg/m³
-		double umidade = 30 + (90 - 30) * random.nextDouble(); // 30 - 90 %
-		double temperatura = 15 + (40 - 15) * random.nextDouble(); // 15 - 40 °C
-		double ruido = 30 + (90 - 30) * random.nextDouble(); // 30 - 90 dB
-		double radiacao = 0 + (10 - 0) * random.nextDouble(); // 0 - 10 (Índice UV)
-
-		return new ClimateData(dataIdCounter++, LocalDateTime.now(), co2, co, no2, so2, pm25, pm10, umidade,
-				temperatura, ruido, radiacao);
-	}
-
+	/*
+	 * ============================================================= 3. CICLO
+	 * PRINCIPAL DO DISPOSITIVO
+	 * =============================================================
+	 */
 	public void start() {
 		System.out.println("\n--- Dispositivo " + deviceId + " iniciando fluxo... ---");
 
-		// --- 1. Descoberta de Serviço ---
 		String authAddress = discoverService();
 		if (authAddress == null)
 			return;
 
-		// --- 2. Autenticação (Redirecionamento) ---
 		String edgeAddress = authenticate(authAddress);
 		if (edgeAddress == null)
 			return;
 
-		// --- 3. Conexão com Borda e Comunicação Criptografada ---
 		connectToEdge(edgeAddress);
 	}
 
+	/*
+	 * ============================================================= 4. DESCOBERTA,
+	 * AUTENTICAÇÃO E HANDSHAKE
+	 * =============================================================
+	 */
+
+	/** 4.1 Descoberta de Serviço */
 	private String discoverService() {
-		// [CÓDIGO discoverService() INALTERADO]
 		System.out.println("🗺️ Dispositivo: Conectando ao LocationService...");
+
 		try (Socket socket = new Socket(LocationService.LOCATION_ADDRESS, 9000);
-				BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));) {
+				BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
+
 			String response = in.readLine();
 			if (response != null && response.startsWith("AUTH_REDIRECT:")) {
 				return response.substring(14);
 			}
+
 		} catch (Exception e) {
 			System.err.println("❌ Dispositivo: Erro na Descoberta: " + e.getMessage());
 		}
 		return null;
 	}
 
+	/** 4.2 Autenticação */
 	private String authenticate(String authAddress) {
-		// [CÓDIGO authenticate() INALTERADO]
 		String[] parts = authAddress.split(":");
 		String host = parts[0];
 		int port = Integer.parseInt(parts[1]);
@@ -94,22 +97,24 @@ public class Device {
 
 		try (Socket socket = new Socket(host, port);
 				PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-				BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));) {
-			// Envia credenciais
+				BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
+
 			out.println("CRED:" + deviceId + ":" + password);
 
 			String response = in.readLine();
 			if (response != null && response.startsWith("AUTH_SUCCESS:")) {
-				return response.substring(13); // Retorna o endereço da Borda
-			} else {
-				System.err.println("❌ Dispositivo: Falha na autenticação: " + response);
+				return response.substring(13);
 			}
+
+			System.err.println("❌ Dispositivo: Falha na autenticação: " + response);
+
 		} catch (Exception e) {
 			System.err.println("❌ Dispositivo: Erro na Autenticação: " + e.getMessage());
 		}
 		return null;
 	}
 
+	/** 4.3 Conexão com Edge (TCP + UDP) */
 	private void connectToEdge(String edgeAddress) {
 		String[] parts = edgeAddress.split(":");
 		String host = parts[0];
@@ -117,131 +122,184 @@ public class Device {
 
 		System.out.println("💻 Dispositivo: Conectando ao EdgeService em " + edgeAddress + "...");
 
-		SecretKey symmetricKey = null; // Chave declarada fora do try-with-resources TCP
-		InetAddress edgeAddressUDP = null; // Endereço para o DatagramSocket
+		SecretKey symmetricKey = null;
+		InetAddress edgeAddressUDP = null;
 
-		// --- FASE 1: CONEXÃO TCP (TROCA DE CHAVES E ID) ---
+		/*
+		 * ----------------------------- FASE 1 — HANDSHAKE TCP
+		 * -----------------------------
+		 */
 		try (Socket socket = new Socket(host, port);
 				PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-				BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));) {
+				BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
 
-			// --- 1. Troca de Chaves Criptografada (RSA) ---
-			symmetricKey = SecurityUtils.generateAESKey();
-			PublicKey edgePublicKey = SecurityUtils.getEdgePublicKey();
+			// 1. Solicita chave pública
+			out.println("REQUEST_PUB_KEY");
 
-			System.out.println("🔑 Dispositivo: Chave AES gerada. Criptografando com RSA...");
+			String line = in.readLine();
+			if (line == null || !line.startsWith("EDGE_PUB_KEY:")) {
+				throw new Exception("Chave pública não recebida do Edge.");
+			}
 
-			byte[] encryptedSymmetricKey = SecurityUtils.encryptSymmetricKey(symmetricKey, edgePublicKey);
+			// 2. Carrega chave pública
+			String pubKeyB64 = line.substring(13);
+			byte[] pubKeyBytes = Base64.getDecoder().decode(pubKeyB64);
+			KeyFactory kf = KeyFactory.getInstance("RSA");
+			PublicKey edgePublicKey = kf.generatePublic(new X509EncodedKeySpec(pubKeyBytes));
+
+			System.out.println("🔑 Dispositivo: Chave pública recebida do Edge.");
+
+			// 3. Gera chave AES
+			symmetricKey = generateAESKey();
+
+			// 4. Envia AES criptografada
+			byte[] encryptedSymmetricKey = encryptSymmetricKey(symmetricKey, edgePublicKey);
 			out.println(Base64.getEncoder().encodeToString(encryptedSymmetricKey));
 
 			if (!"KEY_EXCHANGE_SUCCESS".equals(in.readLine())) {
-				throw new Exception("Falha na troca de chaves.");
+				throw new Exception("Falha no handshake de chave.");
 			}
 
-			System.out.println("💻 Dispositivo: Chave Simétrica estabelecida com a Borda.");
+			System.out.println("🔒 Dispositivo: Troca de chaves concluída.");
 
-			// --- NOVO PASSO: IDENTIFICAÇÃO DO DISPOSITIVO ---
+			// 5. Envia ID
 			out.println("DEVICE_ID:" + deviceId);
-			System.out.println("🏷️ Dispositivo: Enviou ID (" + deviceId + ") para identificação.");
 
-			// Define o endereço para o UDP antes de fechar o socket TCP
 			edgeAddressUDP = InetAddress.getByName(host);
 
 		} catch (Exception e) {
-			System.err.println("❌ Dispositivo " + deviceId + ": Erro na FASE TCP (Chaves/ID): " + e.getMessage());
-			return; // Se a fase TCP falhar, encerra
+			System.err.println("❌ Dispositivo " + deviceId + ": Erro na fase TCP: " + e.getMessage());
+			return;
 		}
 
-		// --- FASE 2: ENVIO DE DADOS VIA UDP ---
-		System.out.println(" UDP: Iniciando envio de dados climáticos...");
+		/*
+		 * ----------------------------- FASE 2 — ENVIO UDP
+		 * -----------------------------
+		 */
+		System.out.println("📡 UDP: Iniciando envio de dados climáticos...");
 
 		try (DatagramSocket udpSocket = new DatagramSocket()) {
 
 			long startTime = System.currentTimeMillis();
-			long endTime = startTime + (3 * 60 * 1000); // 3 minutos em milissegundos
+			long endTime = startTime + (1 * 60 * 1000);
 
 			while (System.currentTimeMillis() < endTime) {
-				// 2a. Gerar Dados
+
 				ClimateData dataObject = generateRandomClimateData();
 				String dataString = dataObject.toString();
 
-				// 2b. Criptografar TUDO (apenas dados climáticos)
-				byte[] encryptedData = SecurityUtils.encryptData(dataString, symmetricKey);
+				// criptografa dados
+				byte[] encryptedData = encryptData(dataString, symmetricKey);
 
-				// 2c. Enviar o ID e os Dados Criptografados juntos no pacote UDP
-				// NOTA: Para enviar dois campos em um DatagramPacket, precisamos de um
-				// delimitador customizado.
-
+				// payload: ID + dados criptografados
 				String payload = deviceId + "|" + Base64.getEncoder().encodeToString(encryptedData);
 				byte[] dataPacketBytes = payload.getBytes("UTF-8");
 
 				DatagramPacket packet = new DatagramPacket(dataPacketBytes, dataPacketBytes.length, edgeAddressUDP,
 						port);
+
 				udpSocket.send(packet);
 
 				System.out.println("[" + deviceId + "] Pacote UDP enviado: " + dataString);
 
-				Thread.sleep(2000 + random.nextInt(1000)); // Intervalo de 2 a 3 segundos
+				Thread.sleep(2000 + random.nextInt(1000)); // 2–3s intervalo
 			}
 
-			System.out.println("--- Dispositivo " + deviceId + ": Fim do ciclo de 3 minutos. Encerrando UDP. ---");
+			System.out.println("--- Dispositivo " + deviceId + ": Fim do ciclo UDP de 3 minutos. ---");
 
 		} catch (Exception e) {
 			System.err.println("❌ Dispositivo " + deviceId + ": Erro na FASE UDP: " + e.getMessage());
 		}
 	}
 
+	/*
+	 * ============================================================= 5. GERAÇÃO DE
+	 * DADOS CLIMÁTICOS
+	 * =============================================================
+	 */
+	private ClimateData generateRandomClimateData() {
+		double co2 = 350 + (600 - 350) * random.nextDouble();
+		double co = 0 + (50 - 0) * random.nextDouble();
+		double no2 = 0 + (150 - 0) * random.nextDouble();
+		double so2 = 0 + (50 - 0) * random.nextDouble();
+		double pm25 = 0 + (200 - 0) * random.nextDouble();
+		double pm10 = 0 + (200 - 0) * random.nextDouble();
+		double umidade = 30 + (90 - 30) * random.nextDouble();
+		double temperatura = 15 + (40 - 15) * random.nextDouble();
+		double ruido = 30 + (90 - 30) * random.nextDouble();
+		double radiacao = 0 + (10 - 0) * random.nextDouble();
+
+		return new ClimateData(dataIdCounter++, LocalDateTime.now(), co2, co, no2, so2, pm25, pm10, umidade,
+				temperatura, ruido, radiacao);
+	}
+
+	/*
+	 * ============================================================= 6. CRIPTOGRAFIA
+	 * =============================================================
+	 */
+	public SecretKey generateAESKey() throws NoSuchAlgorithmException {
+		KeyGenerator keyGen = KeyGenerator.getInstance("AES");
+		keyGen.init(256);
+		return keyGen.generateKey();
+	}
+
+	public byte[] encryptSymmetricKey(SecretKey symmetricKey, PublicKey targetPublicKey) throws Exception {
+		Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
+		cipher.init(Cipher.ENCRYPT_MODE, targetPublicKey);
+		return cipher.doFinal(symmetricKey.getEncoded());
+	}
+
+	public static byte[] encryptData(String data, SecretKey symmetricKey) throws Exception {
+		Cipher cipher = Cipher.getInstance("AES/ECB/PKCS5Padding");
+		cipher.init(Cipher.ENCRYPT_MODE, symmetricKey);
+		return cipher.doFinal(data.getBytes());
+	}
+
+	/*
+	 * ============================================================= 7. EXECUÇÃO
+	 * SIMULTÂNEA DOS 5 DISPOSITIVOS
+	 * =============================================================
+	 */
 	public static void main(String[] args) {
 
-		// 1. Definição das Credenciais dos 5 Dispositivos
 		Map<String, String> deviceCredentials = new LinkedHashMap<>();
 		deviceCredentials.put("D1", "sensor1");
 		deviceCredentials.put("D2", "sensor2");
 		deviceCredentials.put("D3", "sensor3");
 		deviceCredentials.put("D4", "sensor4");
-		deviceCredentials.put("D5", "sensormalicioso"); // Dispositivo malicioso/inválido
+		deviceCredentials.put("D5", "sensormalicioso");
 
-		// --- INÍCIO DA SIMULAÇÃO DE CLIENTES ---
-
-		// --- 2. INICIALIZAÇÃO DOS 5 DISPOSITIVOS SIMULTANEAMENTE ---
-		System.out.println("\n--- ⚡ INICIANDO 5 PROCESSOS DE COLETA (4 Válidos + 1 Malicioso) ---");
+		System.out.println("\n--- ⚡ INICIANDO 5 PROCESSOS DE COLETA ---");
 
 		ExecutorService deviceExecutor = Executors.newFixedThreadPool(deviceCredentials.size());
 
 		for (Map.Entry<String, String> entry : deviceCredentials.entrySet()) {
+
 			final String id = entry.getKey();
 			final String password = entry.getValue();
 
-			// Cada dispositivo é submetido ao ExecutorService (1 Thread por Dispositivo)
 			deviceExecutor.submit(() -> {
-				// CRÍTICO: Delay aleatório para evitar a concorrência extrema (Padding Error)
 				try {
-					Thread.sleep(new Random().nextInt(1000)); // Delay de 0 a 1 segundo
+					Thread.sleep(new Random().nextInt(1000));
 				} catch (InterruptedException ignored) {
 					Thread.currentThread().interrupt();
 				}
 
-				Device device = new Device(id, password);
-				device.start();
+				new Device(id, password).start();
 			});
 		}
 
-		// Encerrar o ExecutorService e aguardar a finalização dos ciclos de 3 minutos
 		deviceExecutor.shutdown();
-
 		System.out.println("\n--- TODOS OS DISPOSITIVOS FORAM DISPARADOS ---");
 
 		try {
 			if (deviceExecutor.awaitTermination(4, TimeUnit.MINUTES)) {
 				System.out.println("--- ✅ SIMULAÇÃO DE COLETA CONCLUÍDA ---");
 			} else {
-				System.out.println("--- ⚠️ ATENÇÃO: Dispositivos ainda ativos após 4 minutos. ---");
+				System.out.println("--- ⚠️ Atenção: Dispositivos ainda ativos após 4 minutos. ---");
 			}
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();
 		}
-
-		// REMOVIDO: Lógica para fechar os servidores, pois eles devem ser encerrados
-		// manualmente ou por meio de um mecanismo de encerramento remoto.
 	}
 }
