@@ -22,35 +22,24 @@ import java.util.concurrent.TimeUnit;
 
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
+import javax.crypto.Mac;
 import javax.crypto.SecretKey;
+import javax.crypto.spec.SecretKeySpec;
 
 public class Device {
 
-	/*
-	 * ============================================================= 1. ATRIBUTOS
-	 * =============================================================
-	 */
 	private final String deviceId;
 	private final String password;
 	private final Random random = new Random();
-	private static long dataIdCounter = 1; // Sequencial para cada dado gerado
+	private static long dataIdCounter = 1;
 
-	/*
-	 * ============================================================= 2. CONSTRUTOR
-	 * =============================================================
-	 */
 	public Device(String deviceId, String password) {
 		this.deviceId = deviceId;
 		this.password = password;
 	}
 
-	/*
-	 * ============================================================= 3. CICLO
-	 * PRINCIPAL DO DISPOSITIVO
-	 * =============================================================
-	 */
 	public void start() {
-		System.out.println("\n--- Dispositivo " + deviceId + " iniciando fluxo... ---");
+		System.out.println("\n[INFO] Dispositivo " + deviceId + " iniciando fluxo...");
 
 		String authAddress = discoverService();
 		if (authAddress == null)
@@ -63,15 +52,11 @@ public class Device {
 		connectToEdge(edgeAddress);
 	}
 
-	/*
-	 * ============================================================= 4. DESCOBERTA,
-	 * AUTENTICAÇÃO E HANDSHAKE
-	 * =============================================================
-	 */
-
-	/** 4.1 Descoberta de Serviço */
+	// ================================================================
+	// 4. DESCOBERTA E AUTENTICAÇÃO
+	// ================================================================
 	private String discoverService() {
-		System.out.println("🗺️ Dispositivo: Conectando ao LocationService...");
+		System.out.println("[INFO] Dispositivo: Conectando ao LocationService...");
 
 		try (Socket socket = new Socket(LocationService.LOCATION_ADDRESS, 9000);
 				BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
@@ -82,18 +67,17 @@ public class Device {
 			}
 
 		} catch (Exception e) {
-			System.err.println("❌ Dispositivo: Erro na Descoberta: " + e.getMessage());
+			System.err.println("[ERRO] Dispositivo: Erro na Descoberta: " + e.getMessage());
 		}
 		return null;
 	}
 
-	/** 4.2 Autenticação */
 	private String authenticate(String authAddress) {
 		String[] parts = authAddress.split(":");
 		String host = parts[0];
 		int port = Integer.parseInt(parts[1]);
 
-		System.out.println("🔑 Dispositivo: Conectando ao AuthService em " + authAddress + "...");
+		System.out.println("[INFO] Dispositivo: Conectando ao AuthService em " + authAddress + "...");
 
 		try (Socket socket = new Socket(host, port);
 				PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
@@ -106,34 +90,33 @@ public class Device {
 				return response.substring(13);
 			}
 
-			System.err.println("❌ Dispositivo: Falha na autenticação: " + response);
+			System.err.println("[ERRO] Dispositivo: Falha na autenticação: " + response);
 
 		} catch (Exception e) {
-			System.err.println("❌ Dispositivo: Erro na Autenticação: " + e.getMessage());
+			System.err.println("[ERRO] Dispositivo: Erro na Autenticação: " + e.getMessage());
 		}
 		return null;
 	}
 
-	/** 4.3 Conexão com Edge (TCP + UDP) */
+	// ================================================================
+	// 4.3 HANDSHAKE TCP + ENVIO UDP
+	// ================================================================
 	private void connectToEdge(String edgeAddress) {
 		String[] parts = edgeAddress.split(":");
 		String host = parts[0];
 		int port = Integer.parseInt(parts[1]);
 
-		System.out.println("💻 Dispositivo: Conectando ao EdgeService em " + edgeAddress + "...");
+		System.out.println("[INFO] Dispositivo: Conectando ao EdgeService em " + edgeAddress + "...");
 
 		SecretKey symmetricKey = null;
-		InetAddress edgeAddressUDP = null;
+		InetAddress edgeAddressUDP;
 
-		/*
-		 * ----------------------------- FASE 1 — HANDSHAKE TCP
-		 * -----------------------------
-		 */
+		// ----------------------------- FASE 1 — HANDSHAKE TCP (RSA + AES + HMAC)
 		try (Socket socket = new Socket(host, port);
 				PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
 				BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
 
-			// 1. Solicita chave pública
+			// 1) Solicita chave pública
 			out.println("REQUEST_PUB_KEY");
 
 			String line = in.readLine();
@@ -141,42 +124,55 @@ public class Device {
 				throw new Exception("Chave pública não recebida do Edge.");
 			}
 
-			// 2. Carrega chave pública
 			String pubKeyB64 = line.substring(13);
 			byte[] pubKeyBytes = Base64.getDecoder().decode(pubKeyB64);
+
 			KeyFactory kf = KeyFactory.getInstance("RSA");
 			PublicKey edgePublicKey = kf.generatePublic(new X509EncodedKeySpec(pubKeyBytes));
 
-			System.out.println("🔑 Dispositivo: Chave pública recebida do Edge.");
+			System.out.println("[INFO] Dispositivo: Chave pública recebida do Edge.");
 
-			// 3. Gera chave AES
+			// 2) Gera chave AES
 			symmetricKey = generateAESKey();
 
-			// 4. Envia AES criptografada
+			// 3) Envia chave AES criptografada com RSA
 			byte[] encryptedSymmetricKey = encryptSymmetricKey(symmetricKey, edgePublicKey);
 			out.println(Base64.getEncoder().encodeToString(encryptedSymmetricKey));
 
+			// 4) Edge confirma AES recebida
 			if (!"KEY_EXCHANGE_SUCCESS".equals(in.readLine())) {
 				throw new Exception("Falha no handshake de chave.");
 			}
 
-			System.out.println("🔒 Dispositivo: Troca de chaves concluída.");
+			System.out.println("[OK] Dispositivo: Troca de chaves concluída.");
 
-			// 5. Envia ID
+			// 5) Envia o deviceId para identificação
 			out.println("DEVICE_ID:" + deviceId);
 
+			// 6) Calcula e envia HMAC para autenticação
+			String hmac = hmacSHA256(deviceId, password);
+			out.println("HMAC:" + hmac);
+
+			System.out.println("[INFO] Dispositivo: HMAC enviado para autenticação.");
+
+			// Edge responde se autenticação foi aceita
+			String authResp = in.readLine();
+			if (!"AUTH_SUCCESS".equals(authResp)) {
+				throw new Exception("Edge rejeitou autenticação HMAC.");
+			}
+
+			System.out.println("[OK] Dispositivo autenticado com sucesso via HMAC.");
+
+			// host para UDP
 			edgeAddressUDP = InetAddress.getByName(host);
 
 		} catch (Exception e) {
-			System.err.println("❌ Dispositivo " + deviceId + ": Erro na fase TCP: " + e.getMessage());
+			System.err.println("[ERRO] Dispositivo " + deviceId + ": Falha na fase TCP: " + e.getMessage());
 			return;
 		}
 
-		/*
-		 * ----------------------------- FASE 2 — ENVIO UDP
-		 * -----------------------------
-		 */
-		System.out.println("📡 UDP: Iniciando envio de dados climáticos...");
+		// ----------------------------- FASE 2 — ENVIO UDP
+		System.out.println("[INFO] UDP: Iniciando envio de dados climáticos.");
 
 		try (DatagramSocket udpSocket = new DatagramSocket()) {
 
@@ -188,10 +184,8 @@ public class Device {
 				ClimateData dataObject = generateRandomClimateData();
 				String dataString = dataObject.toString();
 
-				// criptografa dados
 				byte[] encryptedData = encryptData(dataString, symmetricKey);
 
-				// payload: ID + dados criptografados
 				String payload = deviceId + "|" + Base64.getEncoder().encodeToString(encryptedData);
 				byte[] dataPacketBytes = payload.getBytes("UTF-8");
 
@@ -200,23 +194,21 @@ public class Device {
 
 				udpSocket.send(packet);
 
-				System.out.println("[" + deviceId + "] Pacote UDP enviado: " + dataString);
+				System.out.println("[INFO] " + deviceId + " enviou pacote UDP: " + dataString);
 
-				Thread.sleep(2000 + random.nextInt(1000)); // 2–3s intervalo
+				Thread.sleep(2000 + random.nextInt(1000));
 			}
 
-			System.out.println("--- Dispositivo " + deviceId + ": Fim do ciclo UDP de 3 minutos. ---");
+			System.out.println("[OK] Dispositivo " + deviceId + ": Fim do ciclo UDP de 3 minutos.");
 
 		} catch (Exception e) {
-			System.err.println("❌ Dispositivo " + deviceId + ": Erro na FASE UDP: " + e.getMessage());
+			System.err.println("[ERRO] Dispositivo " + deviceId + ": Falha na FASE UDP: " + e.getMessage());
 		}
 	}
 
-	/*
-	 * ============================================================= 5. GERAÇÃO DE
-	 * DADOS CLIMÁTICOS
-	 * =============================================================
-	 */
+	// ================================================================
+	// 5. GERAÇÃO DE DADOS
+	// ================================================================
 	private ClimateData generateRandomClimateData() {
 		double co2 = 350 + (600 - 350) * random.nextDouble();
 		double co = 0 + (50 - 0) * random.nextDouble();
@@ -233,10 +225,9 @@ public class Device {
 				temperatura, ruido, radiacao);
 	}
 
-	/*
-	 * ============================================================= 6. CRIPTOGRAFIA
-	 * =============================================================
-	 */
+	// ================================================================
+	// 6. CRIPTOGRAFIA
+	// ================================================================
 	public SecretKey generateAESKey() throws NoSuchAlgorithmException {
 		KeyGenerator keyGen = KeyGenerator.getInstance("AES");
 		keyGen.init(256);
@@ -254,12 +245,18 @@ public class Device {
 		cipher.init(Cipher.ENCRYPT_MODE, symmetricKey);
 		return cipher.doFinal(data.getBytes());
 	}
+	
+	public static String hmacSHA256(String data, String secret) throws Exception {
+	    Mac mac = Mac.getInstance("HmacSHA256");
+	    SecretKeySpec keySpec = new SecretKeySpec(secret.getBytes(), "HmacSHA256");
+	    mac.init(keySpec);
+	    byte[] hmacBytes = mac.doFinal(data.getBytes());
+	    return Base64.getEncoder().encodeToString(hmacBytes);
+	}
 
-	/*
-	 * ============================================================= 7. EXECUÇÃO
-	 * SIMULTÂNEA DOS 5 DISPOSITIVOS
-	 * =============================================================
-	 */
+	// ================================================================
+	// 7. EXECUÇÃO DOS 5 DISPOSITIVOS
+	// ================================================================
 	public static void main(String[] args) {
 
 		Map<String, String> deviceCredentials = new LinkedHashMap<>();
@@ -269,12 +266,11 @@ public class Device {
 		deviceCredentials.put("D4", "sensor4");
 		deviceCredentials.put("D5", "sensormalicioso");
 
-		System.out.println("\n--- ⚡ INICIANDO 5 PROCESSOS DE COLETA ---");
+		System.out.println("\n[INFO] Iniciando 5 processos de coleta...");
 
 		ExecutorService deviceExecutor = Executors.newFixedThreadPool(deviceCredentials.size());
 
 		for (Map.Entry<String, String> entry : deviceCredentials.entrySet()) {
-
 			final String id = entry.getKey();
 			final String password = entry.getValue();
 
@@ -284,19 +280,18 @@ public class Device {
 				} catch (InterruptedException ignored) {
 					Thread.currentThread().interrupt();
 				}
-
 				new Device(id, password).start();
 			});
 		}
 
 		deviceExecutor.shutdown();
-		System.out.println("\n--- TODOS OS DISPOSITIVOS FORAM DISPARADOS ---");
+		System.out.println("[INFO] Todos os dispositivos foram disparados.");
 
 		try {
 			if (deviceExecutor.awaitTermination(4, TimeUnit.MINUTES)) {
-				System.out.println("--- ✅ SIMULAÇÃO DE COLETA CONCLUÍDA ---");
+				System.out.println("[OK] Simulação de coleta concluída.");
 			} else {
-				System.out.println("--- ⚠️ Atenção: Dispositivos ainda ativos após 4 minutos. ---");
+				System.out.println("[AVISO] Dispositivos ainda ativos após 4 minutos.");
 			}
 		} catch (InterruptedException e) {
 			Thread.currentThread().interrupt();

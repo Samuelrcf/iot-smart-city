@@ -11,6 +11,8 @@ import java.security.KeyPair;
 import java.security.KeyPairGenerator;
 import java.security.PublicKey;
 import java.util.Base64;
+import java.util.Date;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 
 import javax.crypto.Cipher;
@@ -19,6 +21,9 @@ import javax.crypto.SecretKey;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 
+import io.jsonwebtoken.Jwts;
+import io.jsonwebtoken.SignatureAlgorithm;
+import io.jsonwebtoken.security.Keys;
 import server.security.CryptoManager;
 
 public class DataCenterHTTP {
@@ -30,6 +35,10 @@ public class DataCenterHTTP {
 
 	private final KeyPair dcKeyPair;
 	private HttpServer server;
+
+	private final Map<String, String> validUsers = Map.of("samuel", "12345");
+
+	private static final String JWT_SECRET = "qwerasdfzxcv1234qwerasdfzxcv1234";
 
 	// ============================
 	// CONEXÃO COM O DB
@@ -69,7 +78,7 @@ public class DataCenterHTTP {
 		server.setExecutor(null);
 		server.start();
 
-		System.out.println("🌐 DataCenter HTTP iniciado na porta " + PORT);
+		System.out.println("[INFO] DataCenter HTTP iniciado na porta " + PORT);
 	}
 
 	private void registerEndpoints() {
@@ -103,32 +112,63 @@ public class DataCenterHTTP {
 	// 2. HANDSHAKE DO CLIENTE COM AES
 	// =========================================================
 	private void handleAuthHandshake(HttpExchange exchange) throws IOException {
-		if (!exchange.getRequestMethod().equals("POST")) {
+		if (!exchange.getRequestMethod().equalsIgnoreCase("POST")) {
 			exchange.sendResponseHeaders(405, -1);
 			return;
 		}
 
-		String clientId = exchange.getRequestHeaders().getFirst("Client-ID");
-		if (clientId == null) {
+		// read body (Base64)
+		String encryptedB64 = new String(exchange.getRequestBody().readAllBytes(), "UTF-8");
+		if (encryptedB64 == null || encryptedB64.isBlank()) {
 			exchange.sendResponseHeaders(400, -1);
 			return;
 		}
 
-		String encryptedKeyB64 = new String(exchange.getRequestBody().readAllBytes());
-		byte[] encryptedKeyBytes = Base64.getDecoder().decode(encryptedKeyB64);
-
 		try {
-			Cipher rsa = Cipher.getInstance("RSA");
-			rsa.init(Cipher.DECRYPT_MODE, dcKeyPair.getPrivate());
+			byte[] encrypted = Base64.getDecoder().decode(encryptedB64);
 
-			byte[] aesBytes = rsa.doFinal(encryptedKeyBytes);
+			Cipher rsa = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
+			rsa.init(Cipher.DECRYPT_MODE, dcKeyPair.getPrivate());
+			byte[] plain = rsa.doFinal(encrypted);
+
+			String payload = new String(plain, "UTF-8");
+			String user = null, pass = null, aesB64 = null;
+			for (String line : payload.split("\n")) {
+				if (line.startsWith("USER="))
+					user = line.substring(5).trim();
+				else if (line.startsWith("PASS="))
+					pass = line.substring(5).trim();
+				else if (line.startsWith("AES="))
+					aesB64 = line.substring(4).trim();
+			}
+
+			if (user == null || pass == null || aesB64 == null) {
+				exchange.sendResponseHeaders(400, -1);
+				return;
+			}
+
+			String expectedPass = validUsers.get(user);
+			if (expectedPass == null || !expectedPass.equals(pass)) {
+				exchange.sendResponseHeaders(403, -1);
+				System.err.println("[ERRO] Falha de autenticação para usuário: " + user);
+				return;
+			}
+
+			byte[] aesBytes = Base64.getDecoder().decode(aesB64);
 			SecretKey aesKey = new javax.crypto.spec.SecretKeySpec(aesBytes, "AES");
 
-			clientKeys.put(clientId, aesKey);
+			// guarda a chave AES associada ao usuário
+			clientKeys.put(user, aesKey);
+
+			// gera JWT e devolve no header Authorization
+			String jwt = createJwt(user, 15 * 60); // 15 minutos (ver pergunta anterior)
+			exchange.getResponseHeaders().add("Authorization", "Bearer " + jwt);
 
 			exchange.sendResponseHeaders(200, -1);
+			System.out.println("[OK] Handshake concluído para usuário: " + user);
 
 		} catch (Exception e) {
+			System.err.println("[ERRO] handleAuthHandshake: " + e.getMessage());
 			exchange.sendResponseHeaders(500, -1);
 		}
 	}
@@ -137,43 +177,45 @@ public class DataCenterHTTP {
 	// 3. ENDPOINTS PROTEGIDOS POR AES (CLIENTE)
 	// =========================================================
 	private void handleProtectedRequest(HttpExchange exchange, String command) throws IOException {
-		String response = requestFromDB(command);
-		sendEncryptedResponse(exchange, response);
-	}
 
-	// =========================================================
-	// 4. ENVIO DE RESPOSTA CRIPTOGRAFADA COM CHAVE AES DO CLIENTE
-	// =========================================================
-	private void sendEncryptedResponse(HttpExchange exchange, String message) throws IOException {
-		String clientId = exchange.getRequestHeaders().getFirst("Client-ID");
-
-		if (clientId == null || !clientKeys.containsKey(clientId)) {
+		String user = authenticateJwt(exchange);
+		if (user == null) {
+			exchange.sendResponseHeaders(403, -1);
+			return;
+		}
+		SecretKey aesKey = clientKeys.get(user);
+		if (aesKey == null) {
 			exchange.sendResponseHeaders(403, -1);
 			return;
 		}
 
-		SecretKey aesKey = clientKeys.get(clientId);
+		String response = requestFromDB(command);
+		sendEncryptedResponse(exchange, response, aesKey);
+	}
 
+	// =========================================================
+	// 4. ENVIO DE RESPOSTA CRIPTOGRAFADA
+	// =========================================================
+	private void sendEncryptedResponse(HttpExchange exchange, String message, SecretKey aesKey) throws IOException {
 		try {
-			Cipher aes = Cipher.getInstance("AES");
+			Cipher aes = Cipher.getInstance("AES/ECB/PKCS5Padding");
 			aes.init(Cipher.ENCRYPT_MODE, aesKey);
 
-			byte[] encrypted = aes.doFinal(message.getBytes());
+			byte[] encrypted = aes.doFinal(message.getBytes("UTF-8"));
 			byte[] b64 = Base64.getEncoder().encode(encrypted);
 
 			exchange.sendResponseHeaders(200, b64.length);
-
 			try (OutputStream os = exchange.getResponseBody()) {
 				os.write(b64);
 			}
-
 		} catch (Exception e) {
+			System.err.println("[ERRO] sendEncryptedResponse: " + e.getMessage());
 			exchange.sendResponseHeaders(500, -1);
 		}
 	}
 
 	// =========================================================
-	// 5. HANDSHAKE E CONSULTAS AO DB INTERNO
+	// 5. HANDSHAKE COM O DB INTERNO
 	// =========================================================
 	private void connectToDatabase() {
 		try {
@@ -185,17 +227,17 @@ public class DataCenterHTTP {
 			sendAESKeyToDB();
 			validateDbAck();
 
-			System.out.println("🔗 DataCenter HTTP conectado ao DB com criptografia AES.");
+			System.out.println("[INFO] DataCenter HTTP conectado ao DB com criptografia AES.");
 
 		} catch (Exception e) {
-			System.err.println("❌ Falha ao conectar ao DB: " + e.getMessage());
+			System.err.println("[ERRO] Falha ao conectar ao DB: " + e.getMessage());
 		}
 	}
 
 	private void requestDbPublicKey() throws Exception {
 		dbOut.println("REQUEST_PUB_KEY");
 
-		String line = dbIn.readLine(); // exemplo: PUB_KEY_B64:xxxx
+		String line = dbIn.readLine();
 		String keyB64 = line.split(":", 2)[1];
 
 		dbPublicKey = CryptoManager.reconstructPublicKey(keyB64);
@@ -226,7 +268,7 @@ public class DataCenterHTTP {
 			return CryptoManager.decryptAES(respBytes, dbAESKey);
 
 		} catch (Exception e) {
-			return "Erro consultando DB: " + e.getMessage();
+			return "[ERRO] Falha consultando DB: " + e.getMessage();
 		}
 	}
 
@@ -238,4 +280,37 @@ public class DataCenterHTTP {
 		gen.initialize(2048);
 		return gen.generateKeyPair();
 	}
+
+	// =========================================================
+	// JWT helpers
+	// =========================================================
+
+	private String createJwt(String username, long ttlSeconds) {
+		long nowMillis = System.currentTimeMillis();
+
+		return Jwts.builder().setSubject(username).setIssuedAt(new Date(nowMillis))
+				.setExpiration(new Date(nowMillis + ttlSeconds * 1000))
+				.signWith(Keys.hmacShaKeyFor(JWT_SECRET.getBytes()), SignatureAlgorithm.HS256).compact();
+	}
+
+	private String validateAndGetSubjectFromJwt(String token) {
+		try {
+			return Jwts.parserBuilder().setSigningKey(Keys.hmacShaKeyFor(JWT_SECRET.getBytes())).build()
+					.parseClaimsJws(token).getBody().getSubject();
+		} catch (Exception e) {
+			return null;
+		}
+	}
+
+	// =========================================================
+	// Autenticação com JWT
+	// =========================================================
+	private String authenticateJwt(HttpExchange exchange) {
+		String header = exchange.getRequestHeaders().getFirst("Authorization");
+		if (header == null || !header.startsWith("Bearer "))
+			return null;
+		String token = header.substring(7);
+		return validateAndGetSubjectFromJwt(token);
+	}
+
 }

@@ -9,6 +9,7 @@ import java.util.Base64;
 
 import javax.crypto.Cipher;
 import javax.crypto.KeyGenerator;
+import javax.crypto.Mac;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 
@@ -17,7 +18,7 @@ public class CryptoManager {
 	public static final String CREDENTIALS_FILE = "device_credentials.txt";
 
 	// -------------------------------------------------------------------------
-	// 2. Utilidades RSA (assimétrica)
+	// 1. Utilidades RSA (assimétrica)
 	// -------------------------------------------------------------------------
 	public static byte[] encryptSymmetricKey(SecretKey symmetricKey, PublicKey targetPublicKey) throws Exception {
 		Cipher cipher = Cipher.getInstance("RSA/ECB/PKCS1Padding");
@@ -38,7 +39,7 @@ public class CryptoManager {
 	}
 
 	// -------------------------------------------------------------------------
-	// 3. Utilidades AES (simétrica)
+	// 2. Utilidades AES (simétrica)
 	// -------------------------------------------------------------------------
 	public static SecretKey generateAESKey() throws NoSuchAlgorithmException {
 		KeyGenerator keyGen = KeyGenerator.getInstance("AES");
@@ -57,4 +58,17 @@ public class CryptoManager {
 		cipher.init(Cipher.DECRYPT_MODE, key);
 		return new String(cipher.doFinal(data));
 	}
+	
+	// -------------------------------------------------------------------------
+	// 3. HMAC
+	// -------------------------------------------------------------------------
+	
+	public static String hmacSHA256(String data, String secret) throws Exception {
+	    Mac mac = Mac.getInstance("HmacSHA256");
+	    SecretKeySpec keySpec = new SecretKeySpec(secret.getBytes(), "HmacSHA256");
+	    mac.init(keySpec);
+	    byte[] hmacBytes = mac.doFinal(data.getBytes());
+	    return Base64.getEncoder().encodeToString(hmacBytes);
+	}
+
 }

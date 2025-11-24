@@ -1,7 +1,9 @@
 package client;
 
+import java.io.InputStream;
 import java.io.OutputStream;
 import java.net.HttpURLConnection;
+import java.net.URI;
 import java.net.URL;
 import java.security.KeyFactory;
 import java.security.PublicKey;
@@ -14,130 +16,181 @@ import javax.crypto.SecretKey;
 
 public class Client {
 
-    private final String clientId = "CLIENTE_001";
+	private SecretKey sessionAESKey;
+	private String datacenterAddress;
+	private final String username = "samuel";
+	private final String password = "12345";
+	private String jwtToken;
 
-    private SecretKey sessionAESKey; 
-    private String datacenterAddress;   // Obtido via localizador
+	public void start() throws Exception {
 
+		discoverDataCenter();
 
-    // -------------------------------------------------------------------------
-    // INÍCIO DO FLUXO DO CLIENTE
-    // -------------------------------------------------------------------------
-    public void start() throws Exception {
+		PublicKey dcPublicKey = fetchPublicKey();
 
-        discoverDataCenter();                 // 1. Descoberta
-        PublicKey dcPublicKey = fetchPublicKey();   // 2. Baixa chave RSA
+		sessionAESKey = generateAESKey();
 
-        sessionAESKey = generateAESKey();     // 3. Gera chave AES
+		sendAESKey(dcPublicKey);
 
-        sendAESKey(dcPublicKey);              // 4. Handshake
+		String dados = requestProtected("/dados");
+		String relatorios = requestProtected("/relatorios");
+		String alertas = requestProtected("/alertas");
+		String previsoes = requestProtected("/previsoes");
 
-        // 5. Requisições protegidas
-        String dados     = requestProtected("/dados");
-        String relatorios = requestProtected("/relatorios");
-        String alertas    = requestProtected("/alertas");
-        String previsoes  = requestProtected("/previsoes");
+		System.out.println("\n[INFO] Dados = " + dados);
+		System.out.println("[INFO] Relatórios = " + relatorios);
+		System.out.println("[ALERTA] Alertas = " + alertas);
+		System.out.println("[INFO] Previsões = " + previsoes);
+	}
 
-        System.out.println("\n📌 Dados      = " + dados);
-        System.out.println("📌 Relatórios = " + relatorios);
-        System.out.println("📌 Alertas    = " + alertas);
-        System.out.println("📌 Previsões  = " + previsoes);
-    }
+	// -------------------------------------------------------------------------
+	// 1. Descoberta
+	// -------------------------------------------------------------------------
+	private void discoverDataCenter() throws Exception {
+		URI uri = new URI("http://127.0.0.1:9001/client");
+		URL url = uri.toURL();
+		HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+		conn.setRequestMethod("GET");
 
+		String response = new String(conn.getInputStream().readAllBytes());
 
-    // -------------------------------------------------------------------------
-    // 1. Descoberta via Localizador HTTP
-    // -------------------------------------------------------------------------
-    private void discoverDataCenter() throws Exception {
-        URL url = new URL("http://127.0.0.1:9001/client");
+		datacenterAddress = response.substring("HTTP_REDIRECT:".length());
+		System.out.println("[INFO] Cliente descobriu DataCenter em: " + datacenterAddress);
+	}
 
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setRequestMethod("GET");
+	// -------------------------------------------------------------------------
+	// 2. Baixa chave pública
+	// -------------------------------------------------------------------------
+	private PublicKey fetchPublicKey() throws Exception {
+		URI uri = new URI(datacenterAddress + "/publickey");
+		URL url = uri.toURL();
+		HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+		conn.setRequestMethod("GET");
 
-        String response = new String(conn.getInputStream().readAllBytes());
+		byte[] keyBytes = conn.getInputStream().readAllBytes();
+		byte[] decoded = Base64.getDecoder().decode(keyBytes);
 
-        if (!response.startsWith("HTTP_REDIRECT:")) {
-            throw new RuntimeException("Resposta inesperada do Localizador: " + response);
-        }
+		X509EncodedKeySpec spec = new X509EncodedKeySpec(decoded);
+		return KeyFactory.getInstance("RSA").generatePublic(spec);
+	}
 
-        datacenterAddress = response.substring("HTTP_REDIRECT:".length());
+	// -------------------------------------------------------------------------
+	// 3. AES key
+	// -------------------------------------------------------------------------
+	private SecretKey generateAESKey() throws Exception {
+		KeyGenerator gen = KeyGenerator.getInstance("AES");
+		gen.init(128);
+		return gen.generateKey();
+	}
 
-        System.out.println("🛰️ Cliente descobriu DataCenter em: " + datacenterAddress);
-    }
+	// -------------------------------------------------------------------------
+	// 4. Handshake 
+	// -------------------------------------------------------------------------
+	private void sendAESKey(PublicKey publicKey) throws Exception {
+	    // 1) monta payload
+	    String aesB64 = Base64.getEncoder().encodeToString(sessionAESKey.getEncoded());
+	    String payload = "USER=" + username + "\n" +
+	                     "PASS=" + password + "\n" +
+	                     "AES=" + aesB64 + "\n";
 
+	    // 2) cifra com RSA/OAEP
+	    Cipher rsa = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
+	    rsa.init(Cipher.ENCRYPT_MODE, publicKey);
+	    byte[] encrypted = rsa.doFinal(payload.getBytes("UTF-8"));
+	    String encryptedB64 = Base64.getEncoder().encodeToString(encrypted);
 
-    // -------------------------------------------------------------------------
-    // 2. Baixa chave pública do DataCenter
-    // -------------------------------------------------------------------------
-    private PublicKey fetchPublicKey() throws Exception {
-        URL url = new URL(datacenterAddress + "/publickey");
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setRequestMethod("GET");
+	    // 3) POST para /auth
+	    URI uri = new URI(datacenterAddress + "/auth");
+	    URL url = uri.toURL();
+	    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+	    conn.setRequestMethod("POST");
+	    conn.setDoOutput(true);
+	    conn.setConnectTimeout(5000);
+	    conn.setReadTimeout(5000);
+	    conn.setRequestProperty("Content-Type", "application/octet-stream; charset=UTF-8");
 
-        byte[] keyBytes = conn.getInputStream().readAllBytes();
-        byte[] decoded = Base64.getDecoder().decode(keyBytes);
+	    try (OutputStream os = conn.getOutputStream()) {
+	        byte[] outBytes = encryptedB64.getBytes("UTF-8");
+	        os.write(outBytes);
+	        os.flush();
+	    }
 
-        X509EncodedKeySpec spec = new X509EncodedKeySpec(decoded);
+	    // 4) verifica response code
+	    int responseCode = conn.getResponseCode();
+	    if (responseCode != 200) {
+	        try (InputStream err = conn.getErrorStream()) {
+	            if (err != null) {
+	                byte[] buf = err.readAllBytes();
+	                String errMsg = new String(buf, "UTF-8");
+	                throw new RuntimeException("Falha na autenticação: HTTP " + responseCode + " - " + errMsg);
+	            }
+	        }
+	        throw new RuntimeException("Falha na autenticação: HTTP " + responseCode);
+	    }
 
-        return KeyFactory.getInstance("RSA").generatePublic(spec);
-    }
+	    // 5) lê JWT do header Authorization
+	    String authHeader = conn.getHeaderField("Authorization");
+	    if (authHeader != null && authHeader.startsWith("Bearer ")) {
+	        jwtToken = authHeader.substring(7);
+	        System.out.println("[OK] Chave AES enviada e JWT recebido.");
+	    } else {
+	        throw new RuntimeException("JWT não recebido do DataCenter (header Authorization ausente).");
+	    }
 
+	    // 6) consome input stream (para liberar conexão) e desconecta
+	    try (InputStream is = conn.getInputStream()) {
+	        // geralmente vazio quando status 200 e nenhuma body, mas consumir é bom
+	        if (is != null) is.readAllBytes();
+	    } finally {
+	        conn.disconnect();
+	    }
+	}
 
-    // -------------------------------------------------------------------------
-    // 3. Gera chave AES da sessão
-    // -------------------------------------------------------------------------
-    private SecretKey generateAESKey() throws Exception {
-        KeyGenerator gen = KeyGenerator.getInstance("AES");
-        gen.init(128); // AES-128 (pode trocar p/ 256 se quiser)
-        return gen.generateKey();
-    }
+	// Método: request protegido usando JWT; lê resposta (Base64 of AES ciphertext) e descriptografa com sessionAESKey
+	private String requestProtected(String path) throws Exception {
+	    URI uri = new URI(datacenterAddress + path);
+	    URL url = uri.toURL();
 
+	    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+	    conn.setRequestMethod("GET");
+	    conn.setConnectTimeout(5000);
+	    conn.setReadTimeout(5000);
 
-    // -------------------------------------------------------------------------
-    // 4. Handshake: envia a chave AES cifrada com RSA
-    // -------------------------------------------------------------------------
-    private void sendAESKey(PublicKey publicKey) throws Exception {
-        Cipher rsa = Cipher.getInstance("RSA");
-        rsa.init(Cipher.ENCRYPT_MODE, publicKey);
+	    if (jwtToken == null || jwtToken.isBlank()) {
+	        throw new IllegalStateException("JWT ausente. Autentique primeiro.");
+	    }
 
-        byte[] encryptedAES = rsa.doFinal(sessionAESKey.getEncoded());
-        String encryptedB64 = Base64.getEncoder().encodeToString(encryptedAES);
+	    conn.setRequestProperty("Authorization", "Bearer " + jwtToken);
+	    conn.setRequestProperty("Accept", "application/octet-stream");
 
-        URL url = new URL(datacenterAddress + "/auth");
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+	    int rc = conn.getResponseCode();
+	    if (rc != 200) {
+	        // tenta ler corpo de erro
+	        try (InputStream err = conn.getErrorStream()) {
+	            if (err != null) {
+	                String errMsg = new String(err.readAllBytes(), "UTF-8");
+	                throw new RuntimeException("Request protegido falhou: HTTP " + rc + " - " + errMsg);
+	            }
+	        }
+	        throw new RuntimeException("Request protegido falhou: HTTP " + rc);
+	    }
 
-        conn.setRequestMethod("POST");
-        conn.setDoOutput(true);
-        conn.setRequestProperty("Client-ID", clientId);
+	    byte[] encryptedB64;
+	    try (InputStream is = conn.getInputStream()) {
+	        encryptedB64 = is.readAllBytes();
+	    } finally {
+	        conn.disconnect();
+	    }
 
-        try (OutputStream os = conn.getOutputStream()) {
-            os.write(encryptedB64.getBytes());
-        }
+	    if (encryptedB64 == null || encryptedB64.length == 0)
+	        return "";
 
-        conn.getInputStream().close();
+	    byte[] encrypted = Base64.getDecoder().decode(encryptedB64);
 
-        System.out.println("🔐 Chave AES enviada ao DataCenter.");
-    }
+	    Cipher aes = Cipher.getInstance("AES/ECB/PKCS5Padding");
+	    aes.init(Cipher.DECRYPT_MODE, sessionAESKey);
+	    byte[] plain = aes.doFinal(encrypted);
 
-
-    // -------------------------------------------------------------------------
-    // 5. Requisições protegidas por AES
-    // -------------------------------------------------------------------------
-    private String requestProtected(String path) throws Exception {
-
-        URL url = new URL(datacenterAddress + path);
-
-        HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-        conn.setRequestMethod("GET");
-        conn.setRequestProperty("Client-ID", clientId);
-
-        // Recebe dados criptografados (Base64 de AES)
-        byte[] encrypted = conn.getInputStream().readAllBytes();
-        byte[] decoded = Base64.getDecoder().decode(encrypted);
-
-        Cipher aes = Cipher.getInstance("AES");
-        aes.init(Cipher.DECRYPT_MODE, sessionAESKey);
-
-        return new String(aes.doFinal(decoded));
-    }
+	    return new String(plain, "UTF-8");
+	}
 }

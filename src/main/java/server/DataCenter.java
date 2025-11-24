@@ -48,7 +48,7 @@ public class DataCenter {
 	// INICIALIZAÇÃO DO SERVIDOR
 	// ============================
 	public void start() {
-		System.out.printf("☁️ DataCenter ativo na porta %d (TCP).%n", DC_PORT);
+		System.out.printf("[INFO] DataCenter ativo na porta %d (TCP).%n", DC_PORT);
 
 		try (ServerSocket serverSocket = new ServerSocket(DC_PORT)) {
 			while (true) {
@@ -56,7 +56,7 @@ public class DataCenter {
 				new Thread(() -> handleEdgeConnection(edgeSocket)).start();
 			}
 		} catch (Exception e) {
-			System.err.println("❌ DataCenter falhou: " + e.getMessage());
+			System.err.println("[ERRO] DataCenter falhou: " + e.getMessage());
 		}
 	}
 
@@ -65,7 +65,7 @@ public class DataCenter {
 	// =========================================================
 	private void handleEdgeConnection(Socket socket) {
 		try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-				PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
+			 PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
 
 			// ---- HANDSHAKE RSA ----
 			if (!"REQUEST_PUB_KEY".equals(in.readLine()))
@@ -81,7 +81,7 @@ public class DataCenter {
 			processEncryptedMessages(in, out, symmetricKey);
 
 		} catch (Exception e) {
-			System.err.println("Erro no DC: " + e.getMessage());
+			System.err.println("[ERRO] Erro no DC: " + e.getMessage());
 		}
 	}
 
@@ -116,7 +116,7 @@ public class DataCenter {
 
 		try {
 			connectToDatabase();
-			System.out.println("🔗 DataCenter: Conexão com DataBase estabelecida.");
+			System.out.println("[INFO] DataCenter: Conexão com DataBase estabelecida.");
 		} catch (Exception e) {
 			closeDbConnection();
 			throw e;
@@ -156,26 +156,10 @@ public class DataCenter {
 	}
 
 	private synchronized void closeDbConnection() {
-		try {
-			if (dbOut != null)
-				dbOut.flush();
-		} catch (Exception ignore) {
-		}
-		try {
-			if (dbIn != null)
-				dbIn.close();
-		} catch (Exception ignore) {
-		}
-		try {
-			if (dbOut != null)
-				dbOut.close();
-		} catch (Exception ignore) {
-		}
-		try {
-			if (dbSocket != null && !dbSocket.isClosed())
-				dbSocket.close();
-		} catch (Exception ignore) {
-		}
+		try { if (dbOut != null) dbOut.flush(); } catch (Exception ignore) {}
+		try { if (dbIn != null) dbIn.close(); } catch (Exception ignore) {}
+		try { if (dbOut != null) dbOut.close(); } catch (Exception ignore) {}
+		try { if (dbSocket != null && !dbSocket.isClosed()) dbSocket.close(); } catch (Exception ignore) {}
 
 		dbIn = null;
 		dbOut = null;
@@ -190,7 +174,7 @@ public class DataCenter {
 		try {
 			ensureDbConnected();
 		} catch (Exception e) {
-			System.err.println("❌ DataCenter: Não foi possível conectar ao DB: " + e.getMessage());
+			System.err.println("[ERRO] DataCenter: Não foi possível conectar ao DB: " + e.getMessage());
 			return;
 		}
 
@@ -198,15 +182,15 @@ public class DataCenter {
 			// primeira tentativa
 			sendEncryptedToDB(data);
 		} catch (Exception firstEx) {
-			System.err.println("⚠️ Tentando reconectar ao DB: " + firstEx.getMessage());
+			System.err.println("[AVISO] Tentando reconectar ao DB: " + firstEx.getMessage());
 			closeDbConnection();
 
 			try {
 				ensureDbConnected();
 				sendEncryptedToDB(data);
-				System.out.println("✅ Data salvo (retry).");
+				System.out.println("[OK] Data salvo (retry).");
 			} catch (Exception secondEx) {
-				System.err.println("❌ Falha após retry: " + secondEx.getMessage());
+				System.err.println("[ERRO] Falha após retry: " + secondEx.getMessage());
 				closeDbConnection();
 			}
 		}
@@ -220,7 +204,7 @@ public class DataCenter {
 			throw new IOException("ACK inválido do DB.");
 		}
 
-		System.out.println("✅ DataCenter: Dado salvo no DB.");
+		System.out.println("[OK] DataCenter: Dado salvo no DB.");
 	}
 
 	// =========================================================

@@ -27,7 +27,7 @@ public class LocationService {
 	// INICIALIZAÇÃO
 	// ----------------------------
 	public void start() {
-		System.out.println("🗺️ LocationService iniciado");
+		System.out.println("[INFO] LocationService iniciado");
 
 		startSocketServerAsync();
 		startHttpServerAsync();
@@ -35,14 +35,14 @@ public class LocationService {
 
 	private void startSocketServerAsync() {
 		new Thread(() -> {
-			System.out.println("📡 Iniciando SocketListener na porta " + SOCKET_PORT);
+			System.out.println("[INFO] Iniciando SocketListener na porta " + SOCKET_PORT);
 			startSocketServer();
 		}).start();
 	}
 
 	private void startHttpServerAsync() {
 		new Thread(() -> {
-			System.out.println("🌐 Iniciando HttpListener na porta " + HTTP_PORT);
+			System.out.println("[INFO] Iniciando HttpListener na porta " + HTTP_PORT);
 			startHttpServer();
 		}).start();
 	}
@@ -52,7 +52,7 @@ public class LocationService {
 	// ----------------------------
 	private void startSocketServer() {
 		try (ServerSocket serverSocket = new ServerSocket(SOCKET_PORT)) {
-			System.out.println("📡 Aguardando dispositivos (SOCKET)...");
+			System.out.println("[INFO] Aguardando dispositivos (SOCKET)...");
 
 			while (true) {
 				Socket client = serverSocket.accept();
@@ -66,15 +66,15 @@ public class LocationService {
 
 	private void handleDevice(Socket socket) {
 		try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-				PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
+			 PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
 
-			System.out.println("\n📡 Novo dispositivo conectado.");
+			System.out.println("\n[INFO] Novo dispositivo conectado.");
 
 			String authURL = EdgeService.BORDER_ADDRESS + ":" + EdgeService.AUTH_PORT;
 
 			out.println("AUTH_REDIRECT:" + authURL);
 
-			System.out.println("➡ Dispositivo redirecionado ao Edge: " + authURL);
+			System.out.println("[INFO] Dispositivo redirecionado ao Edge: " + authURL);
 
 		} catch (Exception e) {
 			logError("Erro ao tratar dispositivo", e);
@@ -86,13 +86,12 @@ public class LocationService {
 	// ----------------------------
 	private void startHttpServer() {
 		try {
-			HttpServer http = HttpServer.create(new InetSocketAddress(HTTP_PORT), 0);
+			HttpServer http = HttpServer.create(new InetSocketAddress(HTTP_PORT), 0); //Servidor HTTP interno
 
 			http.createContext("/client", this::handleClientRequest);
-			http.setExecutor(null);
 			http.start();
 
-			System.out.println("🌐 HTTP pronto para clientes na porta " + HTTP_PORT);
+			System.out.println("[INFO] HTTP pronto para clientes na porta " + HTTP_PORT);
 
 		} catch (IOException e) {
 			logError("Erro no HttpServer", e);
@@ -105,7 +104,7 @@ public class LocationService {
 			return;
 		}
 
-		System.out.println("🌐 Cliente conectado ao Localizador via HTTP.");
+		System.out.println("[INFO] Cliente conectado ao Localizador via HTTP.");
 
 		String redirectMsg = "HTTP_REDIRECT:" + DATACENTER_HTTP;
 		byte[] response = redirectMsg.getBytes();
@@ -116,21 +115,21 @@ public class LocationService {
 			os.write(response);
 		}
 
-		System.out.println("➡ Cliente redirecionado para DataCenter: " + DATACENTER_HTTP);
+		System.out.println("[INFO] Cliente redirecionado para DataCenter: " + DATACENTER_HTTP);
 	}
 
 	// ----------------------------
 	// LOG DE ERROS
 	// ----------------------------
 	private void logError(String msg, Exception e) {
-		System.err.println("❌ " + msg + ": " + e.getMessage());
+		System.err.println("[ERRO] " + msg + ": " + e.getMessage());
 	}
 
 	// ----------------------------
 	// MAIN
 	// ----------------------------
 	public static void main(String[] args) {
-		System.out.println("--- 🚀 INICIANDO PROCESSO DE LOCALIZAÇÃO ---");
+		System.out.println("[INFO] --- INICIANDO PROCESSO DE LOCALIZAÇÃO ---");
 		new LocationService().start();
 	}
 }

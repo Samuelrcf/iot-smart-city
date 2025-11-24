@@ -23,13 +23,12 @@ import server.security.CryptoManager;
 
 public class DataBase {
 
-	public static final int DB_PORT = 9091; // Porta para comunicação DB interna
+	public static final int DB_PORT = 9091; 
 	private static final String DC_BD_FILE = "datacenter_db.txt";
 
 	private KeyPair dbKeyPair;
 
 	public DataBase() throws NoSuchAlgorithmException {
-		// Geração da chave RSA para comunicação interna (DataCenter <-> DB)
 		KeyPairGenerator keyGen = KeyPairGenerator.getInstance("RSA");
 		keyGen.initialize(2048);
 		this.dbKeyPair = keyGen.generateKeyPair();
@@ -45,13 +44,13 @@ public class DataBase {
 
 	public void start() {
 		try (ServerSocket serverSocket = new ServerSocket(DB_PORT)) {
-			System.out.printf("💾 DataCenterDB ativo na porta %d.\n", DB_PORT);
+			System.out.printf("[INFO] DataCenterDB ativo na porta %d.\n", DB_PORT);
 			while (true) {
 				Socket clientSocket = serverSocket.accept();
 				new Thread(() -> handleDBConnection(clientSocket)).start();
 			}
 		} catch (Exception e) {
-			System.err.println("❌ DataCenterDB falhou: " + e.getMessage());
+			System.err.println("[ERRO] DataCenterDB falhou: " + e.getMessage());
 		}
 	}
 
@@ -59,23 +58,20 @@ public class DataBase {
 		SecretKey symmetricKey = null;
 
 		try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-				PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
+			 PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
 
-			// 1. Deve começar com REQUEST_PUB_KEY
 			String line = in.readLine();
 			if (line == null)
 				return;
 
 			if (!line.equals("REQUEST_PUB_KEY")) {
-				System.err.println("Protocolo inválido no DB!");
+				System.err.println("[ERRO] Protocolo inválido no DB!");
 				return;
 			}
 
-			// 2. Envia chave pública
 			String pubKeyB64 = Base64.getEncoder().encodeToString(this.getPublicKey().getEncoded());
 			out.println("PUB_KEY_B64:" + pubKeyB64);
 
-			// 3. Espera AES_KEY_B64
 			line = in.readLine();
 			if (line == null || !line.startsWith("AES_KEY_B64:"))
 				return;
@@ -85,18 +81,15 @@ public class DataBase {
 
 			out.println("KEY_EXCHANGE_SUCCESS");
 
-			// ---------------------------------------
-			// 4. LOOP DE RECEPÇÃO DE MÚLTIPLAS MENSAGENS
 			String encryptedDataLine;
 
 			while ((encryptedDataLine = in.readLine()) != null) {
 
-				String decryptedData = CryptoManager.decryptAES(Base64.getDecoder().decode(encryptedDataLine),
-						symmetricKey);
+				String decryptedData = CryptoManager.decryptAES(
+						Base64.getDecoder().decode(encryptedDataLine),
+						symmetricKey
+				);
 
-				// -------------------------------------------
-				// NOVAS OPERAÇÕES (requisições do DataCenter)
-				// -------------------------------------------
 				if (decryptedData.equals("GET_REPORT")) {
 					String report = generateReport();
 					String encrypted = Base64.getEncoder()
@@ -120,25 +113,22 @@ public class DataBase {
 					out.println(encrypted);
 					continue;
 				}
-				
+
 				if (decryptedData.equals("GET_DATA")) {
-					String forecast = getData();
+					String data = getData();
 					String encrypted = Base64.getEncoder()
-							.encodeToString(CryptoManager.encryptAES(forecast, symmetricKey));
+							.encodeToString(CryptoManager.encryptAES(data, symmetricKey));
 					out.println(encrypted);
 					continue;
 				}
 
-				// -------------------------------------------
-				// MODO ATUAL: RECEBE DADOS DO DATACENTER
-				// -------------------------------------------
 				saveDataToFile(decryptedData);
 
 				out.println("DB_ACK");
 			}
 
 		} catch (Exception e) {
-			System.err.println("❌ Erro na conexão interna com DB: " + e.getMessage());
+			System.err.println("[ERRO] Erro na conexão interna com DB: " + e.getMessage());
 		}
 	}
 
@@ -153,7 +143,7 @@ public class DataBase {
 			DataBase db = new DataBase();
 			db.start();
 		} catch (NoSuchAlgorithmException e) {
-			System.err.println("Falha ao iniciar DataCenterDB: " + e.getMessage());
+			System.err.println("[ERRO] Falha ao iniciar DataCenterDB: " + e.getMessage());
 		}
 	}
 
@@ -178,30 +168,31 @@ public class DataBase {
 			if (list.isEmpty())
 				return "Nenhum dado disponível.";
 
-			double avgTemp = list.stream().mapToDouble(d -> d.getTemperatura()).average().orElse(0);
-			double maxTemp = list.stream().mapToDouble(d -> d.getTemperatura()).max().orElse(0);
-			double minTemp = list.stream().mapToDouble(d -> d.getTemperatura()).min().orElse(0);
+			double avgTemp = list.stream().mapToDouble(ClimateData::getTemperatura).average().orElse(0);
+			double maxTemp = list.stream().mapToDouble(ClimateData::getTemperatura).max().orElse(0);
+			double minTemp = list.stream().mapToDouble(ClimateData::getTemperatura).min().orElse(0);
 
-			double avgCO2 = list.stream().mapToDouble(d -> d.getCo2()).average().orElse(0);
-			double maxCO2 = list.stream().mapToDouble(d -> d.getCo2()).max().orElse(0);
+			double avgCO2 = list.stream().mapToDouble(ClimateData::getCo2).average().orElse(0);
+			double maxCO2 = list.stream().mapToDouble(ClimateData::getCo2).max().orElse(0);
 
-			double avgNO2 = list.stream().mapToDouble(d -> d.getNo2()).average().orElse(0);
-			double maxNO2 = list.stream().mapToDouble(d -> d.getNo2()).max().orElse(0);
+			double avgNO2 = list.stream().mapToDouble(ClimateData::getNo2).average().orElse(0);
+			double maxNO2 = list.stream().mapToDouble(ClimateData::getNo2).max().orElse(0);
 
-			return "📊 RELATÓRIO DO BANCO DE DADOS\n\n" + "Temperatura:\n" + " • Média: "
-					+ String.format("%.2f", avgTemp) + "°C\n" + " • Mínima: " + String.format("%.2f", minTemp) + "°C\n"
-					+ " • Máxima: " + String.format("%.2f", maxTemp) + "°C\n\n" +
-
-					"CO₂:\n" + " • Média: " + String.format("%.2f", avgCO2) + " ppm\n" + " • Máximo: "
-					+ String.format("%.2f", maxCO2) + " ppm\n\n" +
-
-					"NO₂:\n" + " • Média: " + String.format("%.2f", avgNO2) + " ppm\n" + " • Máximo: "
-					+ String.format("%.2f", maxNO2) + " ppm\n\n" +
-
-					"Total de registros analisados: " + list.size();
+			return "[INFO] RELATÓRIO DO BANCO DE DADOS\n\n"
+					+ "Temperatura:\n"
+					+ " • Média: " + String.format("%.2f", avgTemp) + "°C\n"
+					+ " • Mínima: " + String.format("%.2f", minTemp) + "°C\n"
+					+ " • Máxima: " + String.format("%.2f", maxTemp) + "°C\n\n"
+					+ "CO₂:\n"
+					+ " • Média: " + String.format("%.2f", avgCO2) + " ppm\n"
+					+ " • Máximo: " + String.format("%.2f", maxCO2) + " ppm\n\n"
+					+ "NO₂:\n"
+					+ " • Média: " + String.format("%.2f", avgNO2) + " ppm\n"
+					+ " • Máximo: " + String.format("%.2f", maxNO2) + " ppm\n\n"
+					+ "Total de registros analisados: " + list.size();
 
 		} catch (Exception e) {
-			return "Erro ao gerar relatório: " + e.getMessage();
+			return "[ERRO] Erro ao gerar relatório: " + e.getMessage();
 		}
 	}
 
@@ -211,7 +202,7 @@ public class DataBase {
 			if (list.isEmpty())
 				return "Sem dados para analisar.";
 
-			StringBuilder sb = new StringBuilder("🚨 ALERTAS DETECTADOS:\n\n");
+			StringBuilder sb = new StringBuilder("[AVISO] ALERTAS DETECTADOS:\n\n");
 
 			for (ClimateData d : list) {
 
@@ -228,13 +219,13 @@ public class DataBase {
 					sb.append("• Temperatura extrema no registro ").append(d.getId()).append("\n");
 			}
 
-			if (sb.toString().equals("🚨 ALERTAS DETECTADOS:\n\n"))
+			if (sb.toString().equals("[AVISO] ALERTAS DETECTADOS:\n\n"))
 				return "Nenhum alerta detectado.";
 
 			return sb.toString();
 
 		} catch (Exception e) {
-			return "Erro ao gerar alertas: " + e.getMessage();
+			return "[ERRO] Erro ao gerar alertas: " + e.getMessage();
 		}
 	}
 
@@ -247,20 +238,25 @@ public class DataBase {
 			int size = list.size();
 			List<ClimateData> last = list.subList(size - 5, size);
 
-			double trendTemp = last.get(last.size() - 1).getTemperatura() - last.get(0).getTemperatura();
+			double trendTemp = last.get(last.size() - 1).getTemperatura()
+					- last.get(0).getTemperatura();
 			String tendencia = trendTemp > 0 ? "aumentando" : "diminuindo";
 
-			double prediction = last.get(last.size() - 1).getTemperatura() + (trendTemp * 0.25);
+			double prediction = last.get(last.size() - 1).getTemperatura()
+					+ (trendTemp * 0.25);
 
-			return "📈 PREVISÃO SIMPLES\n\n" + "Tendência de temperatura dos últimos 5 registros:\n" + " - Variação: "
-					+ String.format("%.2f", trendTemp) + "°C\n" + " - Tendência: temperatura está " + tendencia + "\n\n"
-					+ "Previsão para a próxima hora:\n" + " - Estimativa: " + String.format("%.2f", prediction) + "°C";
+			return "[INFO] PREVISÃO SIMPLES\n\n"
+					+ "Tendência de temperatura dos últimos 5 registros:\n"
+					+ " - Variação: " + String.format("%.2f", trendTemp) + "°C\n"
+					+ " - Tendência: temperatura está " + tendencia + "\n\n"
+					+ "Previsão para a próxima hora:\n"
+					+ " - Estimativa: " + String.format("%.2f", prediction) + "°C";
 
 		} catch (Exception e) {
-			return "Erro ao gerar previsão: " + e.getMessage();
+			return "[ERRO] Erro ao gerar previsão: " + e.getMessage();
 		}
 	}
-	
+
 	public String getData() {
 	    List<String> lines = new ArrayList<>();
 
@@ -270,7 +266,7 @@ public class DataBase {
 	            lines.add(line);
 	        }
 	    } catch (Exception e) {
-	        return "Erro ao ler banco de dados: " + e.getMessage();
+	        return "[ERRO] Erro ao ler banco de dados: " + e.getMessage();
 	    }
 
 	    if (lines.isEmpty()) {
@@ -278,7 +274,7 @@ public class DataBase {
 	    }
 
 	    StringBuilder sb = new StringBuilder();
-	    sb.append("📌 ÚLTIMOS REGISTROS ARMAZENADOS\n\n");
+	    sb.append("[INFO] ÚLTIMOS REGISTROS ARMAZENADOS\n\n");
 
 	    int start = Math.max(0, lines.size() - 10);
 
@@ -291,6 +287,4 @@ public class DataBase {
 
 	    return sb.toString();
 	}
-
-
 }
