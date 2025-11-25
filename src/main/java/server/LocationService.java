@@ -18,7 +18,7 @@ public class LocationService {
 	// CONFIGURAÇÕES
 	// ----------------------------
 	private static final int SOCKET_PORT = 9000;
-	private static final int HTTP_PORT = SOCKET_PORT + 1;
+	private static final int HTTP_PORT = 9001;
 
 	public static final String LOCATION_ADDRESS = "127.0.0.1";
 	public static final String DATACENTER_HTTP = "http://127.0.0.1:7000";
@@ -70,7 +70,7 @@ public class LocationService {
 
 			System.out.println("\n[INFO] Novo dispositivo conectado.");
 
-			String authURL = EdgeService.BORDER_ADDRESS + ":" + EdgeService.AUTH_PORT;
+			String authURL = EdgeService.BORDER_ADDRESS + ":" + EdgeService.EDGE_PORT;
 
 			out.println("AUTH_REDIRECT:" + authURL);
 

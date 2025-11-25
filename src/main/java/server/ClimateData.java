@@ -125,7 +125,6 @@ public class ClimateData {
 				String key = kv[0].trim();
 				String value = kv[1].trim();
 
-				// Converte decimal BR → US
 				value = value.replace(",", ".");
 
 				switch (key) {

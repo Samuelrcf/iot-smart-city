@@ -179,7 +179,6 @@ public class DataCenter {
 		}
 
 		try {
-			// primeira tentativa
 			sendEncryptedToDB(data);
 		} catch (Exception firstEx) {
 			System.err.println("[AVISO] Tentando reconectar ao DB: " + firstEx.getMessage());

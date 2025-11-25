@@ -41,15 +41,12 @@ public class Device {
 	public void start() {
 		System.out.println("\n[INFO] Dispositivo " + deviceId + " iniciando fluxo...");
 
-		String authAddress = discoverService();
-		if (authAddress == null)
-			return;
-
-		String edgeAddress = authenticate(authAddress);
+		String edgeAddress = discoverService();
 		if (edgeAddress == null)
-			return;
+		    return;
 
 		connectToEdge(edgeAddress);
+
 	}
 
 	// ================================================================
@@ -68,32 +65,6 @@ public class Device {
 
 		} catch (Exception e) {
 			System.err.println("[ERRO] Dispositivo: Erro na Descoberta: " + e.getMessage());
-		}
-		return null;
-	}
-
-	private String authenticate(String authAddress) {
-		String[] parts = authAddress.split(":");
-		String host = parts[0];
-		int port = Integer.parseInt(parts[1]);
-
-		System.out.println("[INFO] Dispositivo: Conectando ao AuthService em " + authAddress + "...");
-
-		try (Socket socket = new Socket(host, port);
-				PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
-				BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
-
-			out.println("CRED:" + deviceId + ":" + password);
-
-			String response = in.readLine();
-			if (response != null && response.startsWith("AUTH_SUCCESS:")) {
-				return response.substring(13);
-			}
-
-			System.err.println("[ERRO] Dispositivo: Falha na autenticação: " + response);
-
-		} catch (Exception e) {
-			System.err.println("[ERRO] Dispositivo: Erro na Autenticação: " + e.getMessage());
 		}
 		return null;
 	}
@@ -177,7 +148,7 @@ public class Device {
 		try (DatagramSocket udpSocket = new DatagramSocket()) {
 
 			long startTime = System.currentTimeMillis();
-			long endTime = startTime + (1 * 60 * 1000);
+			long endTime = startTime + (3 * 60 * 1000);
 
 			while (System.currentTimeMillis() < endTime) {
 
@@ -240,13 +211,13 @@ public class Device {
 		return cipher.doFinal(symmetricKey.getEncoded());
 	}
 
-	public static byte[] encryptData(String data, SecretKey symmetricKey) throws Exception {
+	public byte[] encryptData(String data, SecretKey symmetricKey) throws Exception {
 		Cipher cipher = Cipher.getInstance("AES/ECB/PKCS5Padding");
 		cipher.init(Cipher.ENCRYPT_MODE, symmetricKey);
 		return cipher.doFinal(data.getBytes());
 	}
 	
-	public static String hmacSHA256(String data, String secret) throws Exception {
+	public String hmacSHA256(String data, String secret) throws Exception {
 	    Mac mac = Mac.getInstance("HmacSHA256");
 	    SecretKeySpec keySpec = new SecretKeySpec(secret.getBytes(), "HmacSHA256");
 	    mac.init(keySpec);

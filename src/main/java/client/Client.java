@@ -47,7 +47,7 @@ public class Client {
 	// 1. Descoberta
 	// -------------------------------------------------------------------------
 	private void discoverDataCenter() throws Exception {
-		URI uri = new URI("http://127.0.0.1:9001/client");
+		URI uri = new URI("http://127.0.0.1:9001/client"); // endereço do localizador
 		URL url = uri.toURL();
 		HttpURLConnection conn = (HttpURLConnection) url.openConnection();
 		conn.setRequestMethod("GET");
@@ -70,7 +70,7 @@ public class Client {
 		byte[] keyBytes = conn.getInputStream().readAllBytes();
 		byte[] decoded = Base64.getDecoder().decode(keyBytes);
 
-		X509EncodedKeySpec spec = new X509EncodedKeySpec(decoded);
+		X509EncodedKeySpec spec = new X509EncodedKeySpec(decoded); // encapsula os bytes binários da chave pública
 		return KeyFactory.getInstance("RSA").generatePublic(spec);
 	}
 
@@ -84,113 +84,96 @@ public class Client {
 	}
 
 	// -------------------------------------------------------------------------
-	// 4. Handshake 
+	// 4. Handshake
 	// -------------------------------------------------------------------------
 	private void sendAESKey(PublicKey publicKey) throws Exception {
-	    // 1) monta payload
-	    String aesB64 = Base64.getEncoder().encodeToString(sessionAESKey.getEncoded());
-	    String payload = "USER=" + username + "\n" +
-	                     "PASS=" + password + "\n" +
-	                     "AES=" + aesB64 + "\n";
+		// 1) monta payload
+		String aesB64 = Base64.getEncoder().encodeToString(sessionAESKey.getEncoded());
+		String payload = "USER=" + username + "\n" + "PASS=" + password + "\n" + "AES=" + aesB64 + "\n";
 
-	    // 2) cifra com RSA/OAEP
-	    Cipher rsa = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
-	    rsa.init(Cipher.ENCRYPT_MODE, publicKey);
-	    byte[] encrypted = rsa.doFinal(payload.getBytes("UTF-8"));
-	    String encryptedB64 = Base64.getEncoder().encodeToString(encrypted);
+		// 2) cifra com RSA/OAEP
+		Cipher rsa = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
+		rsa.init(Cipher.ENCRYPT_MODE, publicKey);
+		byte[] encrypted = rsa.doFinal(payload.getBytes("UTF-8"));
+		String encryptedB64 = Base64.getEncoder().encodeToString(encrypted);
 
-	    // 3) POST para /auth
-	    URI uri = new URI(datacenterAddress + "/auth");
-	    URL url = uri.toURL();
-	    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-	    conn.setRequestMethod("POST");
-	    conn.setDoOutput(true);
-	    conn.setConnectTimeout(5000);
-	    conn.setReadTimeout(5000);
-	    conn.setRequestProperty("Content-Type", "application/octet-stream; charset=UTF-8");
+		// 3) POST para /auth
+		URI uri = new URI(datacenterAddress + "/auth");
+		URL url = uri.toURL();
+		HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+		conn.setRequestMethod("POST");
+		conn.setDoOutput(true);
+		conn.setConnectTimeout(5000);
+		conn.setReadTimeout(5000);
+		conn.setRequestProperty("Content-Type", "application/octet-stream; charset=UTF-8");
 
-	    try (OutputStream os = conn.getOutputStream()) {
-	        byte[] outBytes = encryptedB64.getBytes("UTF-8");
-	        os.write(outBytes);
-	        os.flush();
-	    }
+		try (OutputStream os = conn.getOutputStream()) {
+			byte[] outBytes = encryptedB64.getBytes("UTF-8");
+			os.write(outBytes);
+			os.flush();
+		}
 
-	    // 4) verifica response code
-	    int responseCode = conn.getResponseCode();
-	    if (responseCode != 200) {
-	        try (InputStream err = conn.getErrorStream()) {
-	            if (err != null) {
-	                byte[] buf = err.readAllBytes();
-	                String errMsg = new String(buf, "UTF-8");
-	                throw new RuntimeException("Falha na autenticação: HTTP " + responseCode + " - " + errMsg);
-	            }
-	        }
-	        throw new RuntimeException("Falha na autenticação: HTTP " + responseCode);
-	    }
+		// 4) verifica response code
+		int responseCode = conn.getResponseCode();
+		if (responseCode != 200) {
+			throw new RuntimeException("Falha na autenticação: HTTP " + responseCode);
+		}
 
-	    // 5) lê JWT do header Authorization
-	    String authHeader = conn.getHeaderField("Authorization");
-	    if (authHeader != null && authHeader.startsWith("Bearer ")) {
-	        jwtToken = authHeader.substring(7);
-	        System.out.println("[OK] Chave AES enviada e JWT recebido.");
-	    } else {
-	        throw new RuntimeException("JWT não recebido do DataCenter (header Authorization ausente).");
-	    }
+		// 5) lê JWT do header Authorization
+		String authHeader = conn.getHeaderField("Authorization");
+		if (authHeader != null && authHeader.startsWith("Bearer ")) {
+			jwtToken = authHeader.substring(7);
+			System.out.println("[OK] Chave AES enviada e JWT recebido.");
+		} else {
+			throw new RuntimeException("JWT não recebido do DataCenter (header Authorization ausente).");
+		}
 
-	    // 6) consome input stream (para liberar conexão) e desconecta
-	    try (InputStream is = conn.getInputStream()) {
-	        // geralmente vazio quando status 200 e nenhuma body, mas consumir é bom
-	        if (is != null) is.readAllBytes();
-	    } finally {
-	        conn.disconnect();
-	    }
+		// 6) consome input stream (para liberar conexão) e desconecta
+		try (InputStream is = conn.getInputStream()) {
+			if (is != null)
+				is.readAllBytes();
+		} finally {
+			conn.disconnect();
+		}
 	}
 
-	// Método: request protegido usando JWT; lê resposta (Base64 of AES ciphertext) e descriptografa com sessionAESKey
 	private String requestProtected(String path) throws Exception {
-	    URI uri = new URI(datacenterAddress + path);
-	    URL url = uri.toURL();
+		URI uri = new URI(datacenterAddress + path);
+		URL url = uri.toURL();
 
-	    HttpURLConnection conn = (HttpURLConnection) url.openConnection();
-	    conn.setRequestMethod("GET");
-	    conn.setConnectTimeout(5000);
-	    conn.setReadTimeout(5000);
+		HttpURLConnection conn = (HttpURLConnection) url.openConnection();
+		conn.setRequestMethod("GET");
+		conn.setConnectTimeout(5000);
+		conn.setReadTimeout(5000);
 
-	    if (jwtToken == null || jwtToken.isBlank()) {
-	        throw new IllegalStateException("JWT ausente. Autentique primeiro.");
-	    }
+		if (jwtToken == null || jwtToken.isBlank()) {
+			throw new IllegalStateException("JWT ausente. Autentique primeiro.");
+		}
 
-	    conn.setRequestProperty("Authorization", "Bearer " + jwtToken);
-	    conn.setRequestProperty("Accept", "application/octet-stream");
+		conn.setRequestProperty("Authorization", "Bearer " + jwtToken);
+		conn.setRequestProperty("Accept", "application/octet-stream");
 
-	    int rc = conn.getResponseCode();
-	    if (rc != 200) {
-	        // tenta ler corpo de erro
-	        try (InputStream err = conn.getErrorStream()) {
-	            if (err != null) {
-	                String errMsg = new String(err.readAllBytes(), "UTF-8");
-	                throw new RuntimeException("Request protegido falhou: HTTP " + rc + " - " + errMsg);
-	            }
-	        }
-	        throw new RuntimeException("Request protegido falhou: HTTP " + rc);
-	    }
+		int rc = conn.getResponseCode();
+		if (rc != 200) {
+			throw new RuntimeException("Request protegido falhou: HTTP " + rc);
+		}
 
-	    byte[] encryptedB64;
-	    try (InputStream is = conn.getInputStream()) {
-	        encryptedB64 = is.readAllBytes();
-	    } finally {
-	        conn.disconnect();
-	    }
+		byte[] encryptedB64;
+		try (InputStream is = conn.getInputStream()) {
+			encryptedB64 = is.readAllBytes();
+		} finally {
+			conn.disconnect();
+		}
 
-	    if (encryptedB64 == null || encryptedB64.length == 0)
-	        return "";
+		if (encryptedB64 == null || encryptedB64.length == 0)
+			return "";
 
-	    byte[] encrypted = Base64.getDecoder().decode(encryptedB64);
+		byte[] encrypted = Base64.getDecoder().decode(encryptedB64);
 
-	    Cipher aes = Cipher.getInstance("AES/ECB/PKCS5Padding");
-	    aes.init(Cipher.DECRYPT_MODE, sessionAESKey);
-	    byte[] plain = aes.doFinal(encrypted);
+		Cipher aes = Cipher.getInstance("AES/ECB/PKCS5Padding");
+		aes.init(Cipher.DECRYPT_MODE, sessionAESKey);
+		byte[] plain = aes.doFinal(encrypted);
 
-	    return new String(plain, "UTF-8");
+		return new String(plain, "UTF-8");
 	}
 }

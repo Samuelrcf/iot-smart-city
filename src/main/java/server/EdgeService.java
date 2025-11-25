@@ -37,7 +37,6 @@ public class EdgeService {
 	public static final String DC_ADDRESS = "127.0.0.1";
 
 	public static final int EDGE_PORT = 8081; // Dados TCP/UDP da borda
-	public static final int AUTH_PORT = 8080; // Autenticação
 	public static final int DC_PORT = 8082; // Porta DataCenter
 
 	private static final String EDGE_BD_FILE = "border_db.txt";
@@ -88,7 +87,6 @@ public class EdgeService {
 		}
 
 		new Thread(this::startUDPListener).start();
-		new Thread(this::startAuthListener).start();
 
 		startMainTCPListener();
 	}
@@ -196,54 +194,7 @@ public class EdgeService {
 	}
 
 	// ============================================================
-	// 4. AUTENTICAÇÃO DE DISPOSITIVOS
-	// ============================================================
-	public void startAuthListener() {
-		System.out.printf("[INFO] AuthService (Edge) iniciado na porta %d...%n", AUTH_PORT);
-		try (ServerSocket authSocket = new ServerSocket(AUTH_PORT)) {
-			while (true) {
-				Socket s = authSocket.accept();
-				new Thread(() -> handleAuthRequestEdge(s)).start();
-			}
-		} catch (Exception e) {
-			System.err.println("[ERRO] AuthService caiu: " + e.getMessage());
-		}
-	}
-
-	private void handleAuthRequestEdge(Socket socket) {
-		try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-				PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
-
-			String line = in.readLine();
-			if (line == null || !line.startsWith("CRED:")) {
-				out.println("AUTH_FAIL: Invalid request.");
-				return;
-			}
-
-			String[] parts = line.substring(5).split(":");
-			if (parts.length != 2) {
-				out.println("AUTH_FAIL: Malformed credentials.");
-				return;
-			}
-
-			String deviceId = parts[0];
-			String password = parts[1];
-
-			if (authenticateDevice(deviceId, password)) {
-				String edgeAddress = BORDER_ADDRESS + ":" + EDGE_PORT;
-				out.println("AUTH_SUCCESS:" + edgeAddress);
-				System.out.println("[OK] Dispositivo " + deviceId + " autenticado.");
-			} else {
-				out.println("AUTH_FAIL: Invalid credentials.");
-			}
-
-		} catch (Exception e) {
-			System.err.println("[ERRO] Auth Error: " + e.getMessage());
-		}
-	}
-
-	// ============================================================
-	// 5. TROCA DE CHAVES E ID (TCP)
+	// 4. TROCA DE CHAVES E ID (TCP)
 	// ============================================================
 	private void handleTCPKeyExchange(Socket socket) {
 		SecretKey symmetricKey = null;
@@ -317,7 +268,7 @@ public class EdgeService {
 	}
 
 	// ============================================================
-	// 6. RECEBIMENTO DE DADOS (UDP)
+	// 5. RECEBIMENTO DE DADOS (UDP)
 	// ============================================================
 	private void startUDPListener() {
 		try (DatagramSocket udp = new DatagramSocket(EDGE_PORT)) {
@@ -363,7 +314,7 @@ public class EdgeService {
 	}
 
 	// ============================================================
-	// 7. CACHE FIFO
+	// 6. CACHE FIFO
 	// ============================================================
 	private synchronized void saveDataToCache(String deviceId, String decryptedData) {
 		String entry = "[" + deviceId + "] " + decryptedData;
@@ -396,32 +347,7 @@ public class EdgeService {
 	}
 
 	// ============================================================
-	// 8. AUTENTICAÇÃO
-	// ============================================================
-	public static boolean authenticateDevice(String deviceId, String password) {
-		try (Scanner scan = new Scanner(new File(CryptoManager.CREDENTIALS_FILE))) {
-			int count = 0;
-			while (scan.hasNextLine() && count < 4) {
-				String line = scan.nextLine();
-				if (line.trim().isEmpty())
-					continue;
-
-				String[] parts = line.split(":");
-				if (parts.length == 2 && parts[0].equals(deviceId) && parts[1].equals(password)) {
-					System.out.println("[OK] Autenticação OK para " + deviceId);
-					return true;
-				}
-				count++;
-			}
-		} catch (Exception e) {
-			System.err.println("[ERRO] Credenciais não encontradas.");
-			return false;
-		}
-		return false;
-	}
-
-	// ============================================================
-	// 9. MAIN
+	// 8. MAIN
 	// ============================================================
 	public static void main(String[] args) {
 		System.out.println("--- [INFO] INICIANDO EDGE ---");

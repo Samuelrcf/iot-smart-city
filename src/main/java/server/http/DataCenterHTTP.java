@@ -161,7 +161,7 @@ public class DataCenterHTTP {
 			clientKeys.put(user, aesKey);
 
 			// gera JWT e devolve no header Authorization
-			String jwt = createJwt(user, 15 * 60); // 15 minutos (ver pergunta anterior)
+			String jwt = createJwt(user, 15 * 60); // 15 minutos
 			exchange.getResponseHeaders().add("Authorization", "Bearer " + jwt);
 
 			exchange.sendResponseHeaders(200, -1);
