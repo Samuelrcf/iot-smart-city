@@ -47,7 +47,7 @@ public class Client {
 	// 1. Descoberta
 	// -------------------------------------------------------------------------
 	private void discoverDataCenter() throws Exception {
-		URI uri = new URI("http://127.0.0.1:9001/client"); // endereço do localizador
+		URI uri = new URI("http://127.0.0.1:9001/client");
 		URL url = uri.toURL();
 		HttpURLConnection conn = (HttpURLConnection) url.openConnection();
 		conn.setRequestMethod("GET");
@@ -87,17 +87,14 @@ public class Client {
 	// 4. Handshake
 	// -------------------------------------------------------------------------
 	private void sendAESKey(PublicKey publicKey) throws Exception {
-		// 1) monta payload
 		String aesB64 = Base64.getEncoder().encodeToString(sessionAESKey.getEncoded());
 		String payload = "USER=" + username + "\n" + "PASS=" + password + "\n" + "AES=" + aesB64 + "\n";
 
-		// 2) cifra com RSA/OAEP
 		Cipher rsa = Cipher.getInstance("RSA/ECB/OAEPWithSHA-256AndMGF1Padding");
 		rsa.init(Cipher.ENCRYPT_MODE, publicKey);
 		byte[] encrypted = rsa.doFinal(payload.getBytes("UTF-8"));
 		String encryptedB64 = Base64.getEncoder().encodeToString(encrypted);
 
-		// 3) POST para /auth
 		URI uri = new URI(datacenterAddress + "/auth");
 		URL url = uri.toURL();
 		HttpURLConnection conn = (HttpURLConnection) url.openConnection();
@@ -113,13 +110,11 @@ public class Client {
 			os.flush();
 		}
 
-		// 4) verifica response code
 		int responseCode = conn.getResponseCode();
 		if (responseCode != 200) {
 			throw new RuntimeException("Falha na autenticação: HTTP " + responseCode);
 		}
 
-		// 5) lê JWT do header Authorization
 		String authHeader = conn.getHeaderField("Authorization");
 		if (authHeader != null && authHeader.startsWith("Bearer ")) {
 			jwtToken = authHeader.substring(7);
@@ -128,7 +123,6 @@ public class Client {
 			throw new RuntimeException("JWT não recebido do DataCenter (header Authorization ausente).");
 		}
 
-		// 6) consome input stream (para liberar conexão) e desconecta
 		try (InputStream is = conn.getInputStream()) {
 			if (is != null)
 				is.readAllBytes();

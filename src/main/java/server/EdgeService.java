@@ -22,6 +22,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Scanner;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 
 import javax.crypto.SecretKey;
@@ -36,8 +37,8 @@ public class EdgeService {
 	public static final String BORDER_ADDRESS = "127.0.0.1";
 	public static final String DC_ADDRESS = "127.0.0.1";
 
-	public static final int EDGE_PORT = 8081; // Dados TCP/UDP da borda
-	public static final int DC_PORT = 8082; // Porta DataCenter
+	public static final int EDGE_PORT = 8081;
+	public static final int DC_PORT = 8082;
 
 	private static final String EDGE_BD_FILE = "border_db.txt";
 	private static final int MAX_CACHE_SIZE = 50;
@@ -47,9 +48,12 @@ public class EdgeService {
 
 	private final ConcurrentHashMap<String, SecretKey> activeKeys = new ConcurrentHashMap<>();
 
+	private static final Set<String> blockedDevices = ConcurrentHashMap.newKeySet();
+
 	Map<String, String> devicePasswords = new HashMap<>();
 
-	// Estado da conexão com DataCenter
+	public static final int EDGE_CONTROL_PORT = 9099;
+
 	private Socket dcSocket;
 	private PrintWriter out;
 	private BufferedReader in;
@@ -75,16 +79,20 @@ public class EdgeService {
 	// ============================================================
 	public void start() {
 		System.out.printf("[INFO] EdgeService iniciado na porta %d...%n", EDGE_PORT);
+
 		try {
 			loadPasswords("device_credentials.txt");
 		} catch (IOException e) {
 			e.printStackTrace();
 		}
+
 		try {
 			ensureConnected();
 		} catch (Exception e) {
 			System.err.println("[AVISO] DC indisponível na inicialização: " + e.getMessage());
 		}
+
+		new Thread(this::startControlChannel).start();
 
 		new Thread(this::startUDPListener).start();
 
@@ -223,7 +231,6 @@ public class EdgeService {
 			}
 			deviceId = idLine.substring(10);
 
-			// lê hmac enviado pelo cliente
 			String hmacLine = in.readLine();
 			if (hmacLine == null || !hmacLine.startsWith("HMAC:")) {
 				out.println("ERROR: Missing HMAC");
@@ -231,7 +238,6 @@ public class EdgeService {
 			}
 			String receivedHmac = hmacLine.substring(5);
 
-			// === valida senha do device ===
 			String password = devicePasswords.get(deviceId);
 			if (password == null) {
 				System.err.println("[ERRO] Device desconhecido.");
@@ -239,7 +245,6 @@ public class EdgeService {
 				return;
 			}
 
-			// === valida HMAC ===
 			String expected = CryptoManager.hmacSHA256(deviceId, password);
 
 			if (!expected.equals(receivedHmac)) {
@@ -248,11 +253,12 @@ public class EdgeService {
 				return;
 			}
 
-			// OK — autenticação aceita
 			activeKeys.put(deviceId, symmetricKey);
 			System.out.printf("[INFO] Chave AES salva para [%s]\n", deviceId);
 
 			out.println("AUTH_SUCCESS");
+
+			System.out.printf("[INFO] Monitoramento de firewall ativo para [%s]\n", deviceId);
 
 		} catch (Exception e) {
 			System.err.println("[ERRO] Erro key-exchange: " + e.getMessage());
@@ -286,6 +292,7 @@ public class EdgeService {
 	}
 
 	private void handleUDPData(DatagramPacket packet) {
+
 		try {
 			String payload = new String(packet.getData(), 0, packet.getLength(), "UTF-8");
 			String[] parts = payload.split("\\|", 2);
@@ -294,6 +301,12 @@ public class EdgeService {
 				return;
 
 			String deviceId = parts[0];
+
+			if (EdgeService.isBlocked(deviceId)) {
+				System.err.println("[WARNING] Pacote ignorado de dispositivo bloqueado: " + deviceId);
+				return;
+			}
+
 			String encryptedB64 = parts[1];
 
 			SecretKey key = activeKeys.get(deviceId);
@@ -305,6 +318,7 @@ public class EdgeService {
 			String decrypted = CryptoManager.decryptAES(Base64.getDecoder().decode(encryptedB64), key);
 
 			System.out.printf("[INFO] (UDP) [%s] => %s\n", deviceId, decrypted);
+
 			saveDataToCache(deviceId, decrypted);
 			sendData(decrypted);
 
@@ -344,6 +358,45 @@ public class EdgeService {
 		} catch (IOException e) {
 			System.err.println("[ERRO] Erro no cache: " + e.getMessage());
 		}
+	}
+
+	// ============================================================
+	// 8. FIREWALL
+	// ============================================================
+
+	private void startControlChannel() {
+		System.out.println("[EDGE] Controle administrativo escutando na porta " + EDGE_CONTROL_PORT);
+
+		try (ServerSocket server = new ServerSocket(EDGE_CONTROL_PORT)) {
+			while (true) {
+				Socket socket = server.accept();
+				new Thread(() -> handleControlCommand(socket)).start();
+			}
+		} catch (Exception e) {
+			System.err.println("[ERRO] Controle administrativo caiu: " + e.getMessage());
+		}
+	}
+
+	private void handleControlCommand(Socket socket) {
+		try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
+			String line = in.readLine();
+
+			if (line == null)
+				return;
+
+			if (line.startsWith("BLOCK:")) {
+				String device = line.substring(6);
+				blockedDevices.add(device);
+				System.out.println("[EDGE] >>> Dispositivo BLOQUEADO via canal administrativo: " + device);
+			}
+
+		} catch (Exception e) {
+			System.err.println("[ERRO] Controle administrativo: " + e.getMessage());
+		}
+	}
+
+	public static boolean isBlocked(String deviceId) {
+		return blockedDevices.contains(deviceId);
 	}
 
 	// ============================================================

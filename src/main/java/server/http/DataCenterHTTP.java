@@ -17,6 +17,8 @@ import java.util.concurrent.ConcurrentHashMap;
 
 import javax.crypto.Cipher;
 import javax.crypto.SecretKey;
+import javax.crypto.SecretKeyFactory;
+import javax.crypto.spec.PBEKeySpec;
 
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
@@ -36,7 +38,17 @@ public class DataCenterHTTP {
 	private final KeyPair dcKeyPair;
 	private HttpServer server;
 
-	private final Map<String, String> validUsers = Map.of("samuel", "12345");
+	private static class UserRecord {
+		String salt;
+		String hash;
+
+		UserRecord(String salt, String hash) {
+			this.salt = salt;
+			this.hash = hash;
+		}
+	}
+
+	private final Map<String, UserRecord> validUsers = Map.of("samuel", createPasswordRecord("12345"));
 
 	private static final String JWT_SECRET = "qwerasdfzxcv1234qwerasdfzxcv1234";
 
@@ -147,10 +159,23 @@ public class DataCenterHTTP {
 				return;
 			}
 
-			String expectedPass = validUsers.get(user);
-			if (expectedPass == null || !expectedPass.equals(pass)) {
+			UserRecord rec = validUsers.get(user);
+			if (rec == null) {
 				exchange.sendResponseHeaders(403, -1);
-				System.err.println("[ERRO] Falha de autenticação para usuário: " + user);
+				System.err.println("[ERRO] Usuário não encontrado: " + user);
+				return;
+			}
+
+			// decodifica salt
+			byte[] saltBytes = Base64.getDecoder().decode(rec.salt);
+
+			// recalcula o hash da senha enviada
+			String calcHash = hashPassword(pass, saltBytes);
+
+			// compara com o hash armazenado
+			if (!calcHash.equals(rec.hash)) {
+				exchange.sendResponseHeaders(403, -1);
+				System.err.println("[ERRO] Senha inválida para usuário: " + user);
 				return;
 			}
 
@@ -311,6 +336,33 @@ public class DataCenterHTTP {
 			return null;
 		String token = header.substring(7);
 		return validateAndGetSubjectFromJwt(token);
+	}
+
+	// =========================================================
+	// HASH
+	// =========================================================
+
+	private UserRecord createPasswordRecord(String plain) {
+		try {
+			byte[] saltBytes = new byte[16];
+			new java.security.SecureRandom().nextBytes(saltBytes);
+			String saltB64 = Base64.getEncoder().encodeToString(saltBytes);
+
+			String hashB64 = hashPassword(plain, saltBytes);
+
+			return new UserRecord(saltB64, hashB64);
+		} catch (Exception e) {
+			throw new RuntimeException(e);
+		}
+	}
+
+	private String hashPassword(String password, byte[] saltBytes) throws Exception {
+		PBEKeySpec spec = new PBEKeySpec(password.toCharArray(), saltBytes, 65536, 256);
+
+		SecretKeyFactory factory = SecretKeyFactory.getInstance("PBKDF2WithHmacSHA256");
+		byte[] hash = factory.generateSecret(spec).getEncoded();
+
+		return Base64.getEncoder().encodeToString(hash);
 	}
 
 }

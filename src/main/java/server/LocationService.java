@@ -86,7 +86,7 @@ public class LocationService {
 	// ----------------------------
 	private void startHttpServer() {
 		try {
-			HttpServer http = HttpServer.create(new InetSocketAddress(HTTP_PORT), 0); //Servidor HTTP interno
+			HttpServer http = HttpServer.create(new InetSocketAddress(HTTP_PORT), 0);
 
 			http.createContext("/client", this::handleClientRequest);
 			http.start();

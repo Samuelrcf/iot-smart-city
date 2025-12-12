@@ -43,7 +43,7 @@ public class Device {
 
 		String edgeAddress = discoverService();
 		if (edgeAddress == null)
-		    return;
+			return;
 
 		connectToEdge(edgeAddress);
 
@@ -82,12 +82,10 @@ public class Device {
 		SecretKey symmetricKey = null;
 		InetAddress edgeAddressUDP;
 
-		// ----------------------------- FASE 1 — HANDSHAKE TCP (RSA + AES + HMAC)
 		try (Socket socket = new Socket(host, port);
 				PrintWriter out = new PrintWriter(socket.getOutputStream(), true);
 				BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()))) {
 
-			// 1) Solicita chave pública
 			out.println("REQUEST_PUB_KEY");
 
 			String line = in.readLine();
@@ -103,30 +101,24 @@ public class Device {
 
 			System.out.println("[INFO] Dispositivo: Chave pública recebida do Edge.");
 
-			// 2) Gera chave AES
 			symmetricKey = generateAESKey();
 
-			// 3) Envia chave AES criptografada com RSA
 			byte[] encryptedSymmetricKey = encryptSymmetricKey(symmetricKey, edgePublicKey);
 			out.println(Base64.getEncoder().encodeToString(encryptedSymmetricKey));
 
-			// 4) Edge confirma AES recebida
 			if (!"KEY_EXCHANGE_SUCCESS".equals(in.readLine())) {
 				throw new Exception("Falha no handshake de chave.");
 			}
 
 			System.out.println("[OK] Dispositivo: Troca de chaves concluída.");
 
-			// 5) Envia o deviceId para identificação
 			out.println("DEVICE_ID:" + deviceId);
 
-			// 6) Calcula e envia HMAC para autenticação
 			String hmac = hmacSHA256(deviceId, password);
 			out.println("HMAC:" + hmac);
 
 			System.out.println("[INFO] Dispositivo: HMAC enviado para autenticação.");
 
-			// Edge responde se autenticação foi aceita
 			String authResp = in.readLine();
 			if (!"AUTH_SUCCESS".equals(authResp)) {
 				throw new Exception("Edge rejeitou autenticação HMAC.");
@@ -134,7 +126,6 @@ public class Device {
 
 			System.out.println("[OK] Dispositivo autenticado com sucesso via HMAC.");
 
-			// host para UDP
 			edgeAddressUDP = InetAddress.getByName(host);
 
 		} catch (Exception e) {
@@ -142,7 +133,6 @@ public class Device {
 			return;
 		}
 
-		// ----------------------------- FASE 2 — ENVIO UDP
 		System.out.println("[INFO] UDP: Iniciando envio de dados climáticos.");
 
 		try (DatagramSocket udpSocket = new DatagramSocket()) {
@@ -192,6 +182,29 @@ public class Device {
 		double ruido = 30 + (90 - 30) * random.nextDouble();
 		double radiacao = 0 + (10 - 0) * random.nextDouble();
 
+		if (this.deviceId.equals("D5")) {
+			int attackType = random.nextInt(4); // 0, 1, 2, 3
+
+			switch (attackType) {
+			case 0:
+				temperatura = 150.0 + random.nextDouble();
+				System.out.println("😈 D5 - ATAQUE: TEMPERATURA EXTREMA");
+				break;
+			case 1: 
+				co2 = 1001.0 + random.nextDouble();
+				System.out.println("😈 D5 - ATAQUE: CO2 EXTREMO");
+				break;
+			case 2:
+				umidade = 96.0 + random.nextDouble();
+				temperatura = -5.0 - random.nextDouble();
+				System.out.println("😈 D5 - ATAQUE: INCONSISTÊNCIA LÓGICA");
+				break;
+			case 3: 
+				System.out.println("😈 D5 - ATAQUE: INJEÇÃO DE COMANDO");
+				return new ClimateData(dataIdCounter++, LocalDateTime.now(), "drop table datacenter_db");
+			}
+		}
+
 		return new ClimateData(dataIdCounter++, LocalDateTime.now(), co2, co, no2, so2, pm25, pm10, umidade,
 				temperatura, ruido, radiacao);
 	}
@@ -216,13 +229,13 @@ public class Device {
 		cipher.init(Cipher.ENCRYPT_MODE, symmetricKey);
 		return cipher.doFinal(data.getBytes());
 	}
-	
+
 	public String hmacSHA256(String data, String secret) throws Exception {
-	    Mac mac = Mac.getInstance("HmacSHA256");
-	    SecretKeySpec keySpec = new SecretKeySpec(secret.getBytes(), "HmacSHA256");
-	    mac.init(keySpec);
-	    byte[] hmacBytes = mac.doFinal(data.getBytes());
-	    return Base64.getEncoder().encodeToString(hmacBytes);
+		Mac mac = Mac.getInstance("HmacSHA256");
+		SecretKeySpec keySpec = new SecretKeySpec(secret.getBytes(), "HmacSHA256");
+		mac.init(keySpec);
+		byte[] hmacBytes = mac.doFinal(data.getBytes());
+		return Base64.getEncoder().encodeToString(hmacBytes);
 	}
 
 	// ================================================================
@@ -235,7 +248,8 @@ public class Device {
 		deviceCredentials.put("D2", "sensor2");
 		deviceCredentials.put("D3", "sensor3");
 		deviceCredentials.put("D4", "sensor4");
-		deviceCredentials.put("D5", "sensormalicioso");
+		deviceCredentials.put("D5", "sensor5");
+		deviceCredentials.put("D6", "sensormalicioso");
 
 		System.out.println("\n[INFO] Iniciando 5 processos de coleta...");
 

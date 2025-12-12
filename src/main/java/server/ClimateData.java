@@ -7,6 +7,7 @@ public class ClimateData {
 	private Long id;
 	private LocalDateTime timestamp;
 	private double co2, co, no2, so2, pm25, pm10, umidade, temperatura, ruido, radiacao;
+	private String maliciousString;
 
 	private static final DateTimeFormatter FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
 
@@ -24,6 +25,12 @@ public class ClimateData {
 		this.temperatura = temperatura;
 		this.ruido = ruido;
 		this.radiacao = radiacao;
+	}
+
+	public ClimateData(long id, LocalDateTime timestamp, String maliciousCommand) {
+		this.id = id;
+		this.timestamp = timestamp;
+		this.maliciousString = maliciousCommand;
 	}
 
 	public Long getId() {
@@ -94,9 +101,22 @@ public class ClimateData {
 		return radiacao;
 	}
 
+	public String getMaliciousString() {
+		return maliciousString;
+	}
+
+	public void setMaliciousString(String maliciousString) {
+		this.maliciousString = maliciousString;
+	}
+
 	@Override
 	public String toString() {
+
 		String formattedTimestamp = timestamp != null ? timestamp.format(FORMATTER) : "null";
+
+		if (this.maliciousString != null && !this.maliciousString.isEmpty()) {
+			return " [id=" + id + ", timestamp=" + formattedTimestamp + "]" + "INJECTION_ATTEMPT:" + this.maliciousString;
+		}
 
 		return "Dados Climáticos [id=" + id + ", timestamp=" + formattedTimestamp + ", co2="
 				+ String.format("%.2f", co2) + ", co=" + String.format("%.2f", co) + ", no2="

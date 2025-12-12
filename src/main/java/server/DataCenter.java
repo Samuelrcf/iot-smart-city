@@ -14,7 +14,6 @@ import java.util.Base64;
 
 import javax.crypto.SecretKey;
 
-import server.db.DataBase;
 import server.http.DataCenterHTTP;
 import server.security.CryptoManager;
 
@@ -24,9 +23,8 @@ public class DataCenter {
 	// CONFIGURAÇÕES DO DATACENTER
 	// ============================
 	public static final int DC_PORT = 8082;
-	public static final String DC_ADDRESS = "127.0.0.1";
+	public static final String DB_ADDRESS = "127.0.0.1";
 
-	// Chaves utilizadas para o handshake com Edge
 	private final KeyPair dcKeyPair;
 
 	// ============================
@@ -65,9 +63,8 @@ public class DataCenter {
 	// =========================================================
 	private void handleEdgeConnection(Socket socket) {
 		try (BufferedReader in = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-			 PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
+				PrintWriter out = new PrintWriter(socket.getOutputStream(), true)) {
 
-			// ---- HANDSHAKE RSA ----
 			if (!"REQUEST_PUB_KEY".equals(in.readLine()))
 				return;
 
@@ -77,7 +74,6 @@ public class DataCenter {
 
 			out.println("KEY_EXCHANGE_SUCCESS");
 
-			// ---- LOOP DE DADOS SIMÉTRICOS ----
 			processEncryptedMessages(in, out, symmetricKey);
 
 		} catch (Exception e) {
@@ -124,7 +120,9 @@ public class DataCenter {
 	}
 
 	private void connectToDatabase() throws Exception {
-		dbSocket = new Socket(DC_ADDRESS, DataBase.DB_PORT);
+		int proxyPort = 8090;
+
+		dbSocket = new Socket(DB_ADDRESS, proxyPort);
 		dbOut = new PrintWriter(dbSocket.getOutputStream(), true);
 		dbIn = new BufferedReader(new InputStreamReader(dbSocket.getInputStream()));
 
@@ -132,7 +130,6 @@ public class DataCenter {
 	}
 
 	private void performDbHandshake() throws Exception {
-		// 1. solicitar chave pública
 		dbOut.println("REQUEST_PUB_KEY");
 
 		String pubKeyLine = dbIn.readLine();
@@ -142,7 +139,6 @@ public class DataCenter {
 
 		PublicKey dbPublicKey = CryptoManager.reconstructPublicKey(pubKeyLine.substring(12));
 
-		// 2. gerar e enviar chave AES
 		SecretKey sessionKey = CryptoManager.generateAESKey();
 		byte[] encryptedKey = CryptoManager.encryptSymmetricKey(sessionKey, dbPublicKey);
 
@@ -156,10 +152,26 @@ public class DataCenter {
 	}
 
 	private synchronized void closeDbConnection() {
-		try { if (dbOut != null) dbOut.flush(); } catch (Exception ignore) {}
-		try { if (dbIn != null) dbIn.close(); } catch (Exception ignore) {}
-		try { if (dbOut != null) dbOut.close(); } catch (Exception ignore) {}
-		try { if (dbSocket != null && !dbSocket.isClosed()) dbSocket.close(); } catch (Exception ignore) {}
+		try {
+			if (dbOut != null)
+				dbOut.flush();
+		} catch (Exception ignore) {
+		}
+		try {
+			if (dbIn != null)
+				dbIn.close();
+		} catch (Exception ignore) {
+		}
+		try {
+			if (dbOut != null)
+				dbOut.close();
+		} catch (Exception ignore) {
+		}
+		try {
+			if (dbSocket != null && !dbSocket.isClosed())
+				dbSocket.close();
+		} catch (Exception ignore) {
+		}
 
 		dbIn = null;
 		dbOut = null;
@@ -179,31 +191,44 @@ public class DataCenter {
 		}
 
 		try {
-			sendEncryptedToDB(data);
-		} catch (Exception firstEx) {
-			System.err.println("[AVISO] Tentando reconectar ao DB: " + firstEx.getMessage());
-			closeDbConnection();
+	        sendEncryptedToDB(data);
+	    } catch (SecurityException se) {
+	        System.err.println("[WARN] DataCenter: Dado rejeitado.");
+	        closeDbConnection();
+	    } 
+	    catch (Exception firstEx) {
+	        System.err.println("[AVISO] Tentando reconectar ao DB: " + firstEx.getMessage());
+	        closeDbConnection();
 
-			try {
-				ensureDbConnected();
-				sendEncryptedToDB(data);
-				System.out.println("[OK] Data salvo (retry).");
-			} catch (Exception secondEx) {
-				System.err.println("[ERRO] Falha após retry: " + secondEx.getMessage());
-				closeDbConnection();
-			}
-		}
+	        try {
+	            ensureDbConnected();
+	            sendEncryptedToDB(data);
+	            System.out.println("[OK] Data salvo (retry).");
+	        } catch (Exception secondEx) {
+	            System.err.println("[ERRO] Falha após retry: " + secondEx.getMessage());
+	            closeDbConnection();
+	        }
+	    }
 	}
 
 	private void sendEncryptedToDB(String data) throws Exception {
 		byte[] encrypted = CryptoManager.encryptAES(data, dbSymmetricKey);
-		dbOut.println(Base64.getEncoder().encodeToString(encrypted));
+		String encryptedB64 = Base64.getEncoder().encodeToString(encrypted);
 
-		if (!"DB_ACK".equals(dbIn.readLine())) {
-			throw new IOException("ACK inválido do DB.");
+		dbOut.println(encryptedB64);
+
+		String response = dbIn.readLine();
+
+		if ("FIREWALL_REJECTED".equals(response)) {
+			System.err.println("[ALERTA] DataCenter: Pacote bloqueado pelo Firewall Interno devido a anomalias.");
+			throw new SecurityException("Pacote rejeitado por regras de segurança.");
 		}
 
-		System.out.println("[OK] DataCenter: Dado salvo no DB.");
+		if (!"DB_ACK".equals(response)) {
+			throw new IOException("Resposta inválida do Firewall: " + response);
+		}
+
+		System.out.println("[OK] DataCenter: Dado validado pelo Firewall e salvo no DB.");
 	}
 
 	// =========================================================
@@ -222,8 +247,8 @@ public class DataCenter {
 		try {
 			DataCenter dc = new DataCenter();
 
-			new Thread(dc::start).start(); // TCP
-			new DataCenterHTTP().start(); // HTTP
+			new Thread(dc::start).start(); 
+			new DataCenterHTTP().start(); 
 
 		} catch (Exception e) {
 			e.printStackTrace();
